@@ -10,6 +10,7 @@ import unittest
 
 from app import integration, main
 from app.graph.connection import graph_connection
+from app.graph.seed import seed_blastshield_graph
 from app.services import graph_service
 
 
@@ -45,6 +46,70 @@ class LiveFalkorDBTests(unittest.TestCase):
             graph_service.find_shortest_access_path("auditor_02", "customer-db")["status"],
             "no_path",
         )
+
+    def test_audit_fixture_is_idempotent_and_supports_bounded_depth_comparison(self):
+        with graph_connection() as graph:
+            seed_blastshield_graph(graph)
+        before_canonical = {
+            alert["id"]: integration.investigate_alert(alert["id"])
+            for alert in integration.ALERT_CATALOG
+        }
+        with graph_connection() as graph:
+            def fixture_counts():
+                node_count = graph.ro_query(
+                    "MATCH (n) WHERE n.id STARTS WITH 'auditor_' OR n.id STARTS WITH 'sess_auditor_' "
+                    "OR n.id STARTS WITH 'audit-' OR n.id STARTS WITH 'staging-' "
+                    "OR n.id STARTS WITH 'analytics-cache' RETURN count(n)"
+                ).result_set[0][0]
+                relationship_count = graph.ro_query(
+                    "MATCH (a)-[r]->(b) WHERE (a.id STARTS WITH 'auditor_' OR a.id STARTS WITH 'sess_auditor_' "
+                    "OR a.id STARTS WITH 'audit-' OR a.id STARTS WITH 'staging-' OR a.id = 'analytics-cache') "
+                    "AND (b.id STARTS WITH 'auditor_' OR b.id STARTS WITH 'sess_auditor_' "
+                    "OR b.id STARTS WITH 'audit-' OR b.id STARTS WITH 'staging-' OR b.id = 'analytics-cache') "
+                    "RETURN count(r)"
+                ).result_set[0][0]
+                return node_count, relationship_count
+
+            before_counts = fixture_counts()
+            self.assertEqual(before_counts, (7, 7))
+            seed_blastshield_graph(graph)
+            seed_blastshield_graph(graph)
+            after_counts = fixture_counts()
+        self.assertEqual(after_counts, before_counts)
+
+        shallow = graph_service.find_shortest_access_path("auditor_02", "staging-report", max_hops=4)
+        deeper = graph_service.find_shortest_access_path("auditor_02", "staging-report", max_hops=5)
+        self.assertEqual(shallow["status"], "no_path")
+        self.assertIn("No qualifying path within the selected traversal depth", shallow["message"])
+        self.assertEqual(deeper["status"], "path_found")
+        self.assertEqual(deeper["hop_count"], 5)
+        self.assertEqual(
+            [edge["type"] for edge in deeper["path"]["edges"]],
+            ["HAS_SESSION", "CAN_ACCESS", "RUNS_AS", "CAN_ASSUME", "CAN_READ"],
+        )
+
+        direct = graph_service.find_shortest_access_path("auditor_02", "analytics-cache", max_hops=5)
+        self.assertEqual(direct["status"], "path_found")
+        self.assertEqual(direct["hop_count"], 4)
+        self.assertEqual(direct["path"]["edges"][-1]["target"], "analytics-cache")
+        self.assertEqual(
+            [edge["type"] for edge in direct["path"]["edges"]],
+            ["HAS_SESSION", "CAN_ACCESS", "RUNS_AS", "CAN_READ"],
+        )
+
+        after_canonical = {
+            alert["id"]: integration.investigate_alert(alert["id"])
+            for alert in integration.ALERT_CATALOG
+        }
+        for alert_id, before in before_canonical.items():
+            after = after_canonical[alert_id]
+            self.assertEqual(after.outcome, before.outcome, alert_id)
+            self.assertEqual(after.risk_assessment.score, before.risk_assessment.score, alert_id)
+            self.assertEqual(
+                [[node.id for node in path.nodes] for path in after.paths],
+                [[node.id for node in path.nodes] for path in before.paths],
+                alert_id,
+            )
 
     def test_health_separates_api_and_database_status(self):
         health = main.health()

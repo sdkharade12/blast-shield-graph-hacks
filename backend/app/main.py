@@ -1,10 +1,12 @@
 from typing import Literal
+import logging
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, StrictInt
 
 from app.agent.gemini_service import run_gemini_investigation
+from app.agent.gemini_service import _deterministic_summary
 from app.graph.connection import graph_connection
 from app.integration import (
     get_containment_status,
@@ -13,6 +15,9 @@ from app.integration import (
     list_alerts,
     simulate_containment,
 )
+from app.services.graph_service import find_shortest_access_path
+
+logger = logging.getLogger(__name__)
 from app.schemas import InvestigationRequest, InvestigationResponse
 
 
@@ -34,6 +39,12 @@ class ContainmentSimulationRequest(BaseModel):
     alert_id: str = Field(min_length=1, max_length=64)
     route_id: Literal["primary", "alternate"]
     confirmed: bool
+
+
+class ShortestPathRequest(BaseModel):
+    source_id: str = Field(min_length=1, max_length=128)
+    target_id: str = Field(min_length=1, max_length=128)
+    max_hops: StrictInt = Field(default=6, ge=1, le=6)
 
 
 @app.get("/api/health")
@@ -70,6 +81,15 @@ def investigate(request: InvestigationRequest) -> InvestigationResponse:
     return result
 
 
+@app.post("/api/graph/shortest-path")
+def shortest_path(request: ShortestPathRequest) -> dict:
+    """Explore a bounded path using reviewed relationship/depth templates."""
+    return {
+        **find_shortest_access_path(request.source_id, request.target_id, request.max_hops),
+        "data_source": "synthetic_falkordb",
+    }
+
+
 @app.post("/api/agent/investigate")
 async def investigate_with_agent(request: InvestigationRequest) -> dict:
     # Reject unknown IDs before starting Gemini/MCP subprocesses.
@@ -84,18 +104,31 @@ async def investigate_with_agent(request: InvestigationRequest) -> dict:
     try:
         answer = await run_gemini_investigation(request.alert_id)
     except RuntimeError as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
+        logger.warning("Gemini/MCP unavailable; serving canonical fallback (%s)", type(exc).__name__)
+        return _agent_fallback(request.alert_id, "gemini_configuration_or_service", type(exc).__name__)
     except Exception as exc:
-        raise HTTPException(
-            status_code=502,
-            detail=f"Gemini/MCP investigation failed: {type(exc).__name__}.",
-        ) from exc
+        logger.warning("Gemini/MCP failed; serving canonical fallback (%s)", type(exc).__name__)
+        return _agent_fallback(request.alert_id, "gemini_mcp_failure", type(exc).__name__)
     return {
         "status": "completed",
         "alert_id": request.alert_id,
         **answer,
         "data_source": "synthetic_falkordb",
         "provenance": "Synthetic seeded FalkorDB graph; not a live cloud tenant.",
+    }
+
+
+def _agent_fallback(alert_id: str, reason: str, diagnostic_code: str) -> dict:
+    canonical = investigate_alert(alert_id)
+    return {
+        "status": "fallback",
+        "alert_id": alert_id,
+        "answer": _deterministic_summary(alert_id, canonical),
+        "grounding": {"status": "fallback", "reason": reason, "diagnostic_code": diagnostic_code},
+        "trace": [],
+        "grounding_source": "canonical_api_fallback",
+        "data_source": "synthetic_falkordb",
+        "provenance": "Deterministic summary from the canonical synthetic graph result; Gemini output was not accepted or unavailable.",
     }
 
 

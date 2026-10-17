@@ -109,9 +109,9 @@ def investigate_alert(alert_id: str) -> dict[str, Any]:
 
 @mcp.tool()
 @_traced
-def find_shortest_access_path(source_id: str, target_id: str) -> dict[str, Any]:
-    """Find a bounded, directed path through supported access relationships."""
-    result = run_shortest_path(source_id, target_id)
+def find_shortest_access_path(source_id: str, target_id: str, max_hops: int = 6) -> dict[str, Any]:
+    """Find the shortest supported directed path within one to six hops."""
+    result = run_shortest_path(source_id, target_id, max_hops=max_hops)
     return {**result, "data_source": "synthetic_falkordb"}
 
 

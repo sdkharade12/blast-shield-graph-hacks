@@ -36,7 +36,45 @@ function scenarioType(scenario = "") {
   return scenario.replaceAll("_", " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
 }
 
+function readRoute() {
+  const params = new URLSearchParams(window.location.search);
+  return { view: params.get("view") === "workspace" ? "workspace" : "overview", scenarioId: params.get("scenario") || "" };
+}
+
+function workspaceHref(scenarioId = "") {
+  const params = new URLSearchParams({ view: "workspace" });
+  if (scenarioId) params.set("scenario", scenarioId);
+  return `/?${params.toString()}`;
+}
+
 export default function App() {
+  const [route, setRoute] = useState(readRoute);
+  const navigate = useCallback((view, scenarioId = "", replace = false) => {
+    const params = new URLSearchParams();
+    if (view === "workspace") params.set("view", "workspace");
+    if (scenarioId) params.set("scenario", scenarioId);
+    window.history[replace ? "replaceState" : "pushState"]({}, "", params.size ? `/?${params}` : "/");
+    const nextRoute = readRoute();
+    setRoute(nextRoute);
+    window.dispatchEvent(new CustomEvent("blastshield:navigate", { detail: nextRoute }));
+  }, []);
+
+  useEffect(() => {
+    const onPopState = () => {
+      const nextRoute = readRoute();
+      setRoute(nextRoute);
+      window.dispatchEvent(new CustomEvent("blastshield:navigate", { detail: nextRoute }));
+    };
+    window.addEventListener("popstate", onPopState);
+    return () => window.removeEventListener("popstate", onPopState);
+  }, []);
+
+  return route.view === "workspace"
+    ? <Workspace key="workspace" initialScenarioId={route.scenarioId} onNavigate={navigate} />
+    : <LandingPage initialScenarioId={route.scenarioId} onNavigate={navigate} />;
+}
+
+function Workspace({ initialScenarioId, onNavigate }) {
   const [alerts, setAlerts] = useState([]);
   const [selectedAlert, setSelectedAlert] = useState(null);
   const [investigation, setInvestigation] = useState(null);
@@ -54,6 +92,7 @@ export default function App() {
   const [agentError, setAgentError] = useState("");
   const requestVersion = useRef(0);
   const controllerRef = useRef(null);
+  const initialScenarioIdRef = useRef(initialScenarioId);
 
   function cacheCase(alertId, patch) {
     setCaseCache((current) => ({
@@ -90,7 +129,9 @@ export default function App() {
         setApiReachable(health.api_status === "ok");
         setDatabaseOnline(health.database_status === "ok");
         setAlerts(catalog.items);
-        setSelectedAlert(catalog.items[0] || null);
+        const initialAlert = catalog.items.find((item) => item.id === initialScenarioIdRef.current) || catalog.items[0] || null;
+        setSelectedAlert(initialAlert);
+        if (initialAlert && !initialScenarioIdRef.current) onNavigate("workspace", initialAlert.id, true);
       } catch {
         if (mounted) {
           setApiReachable(false);
@@ -104,7 +145,17 @@ export default function App() {
       mounted = false;
       controllerRef.current?.abort();
     };
-  }, []);
+  }, [onNavigate]);
+
+  useEffect(() => {
+    const onNavigate = (event) => {
+      if (event.detail?.view !== "workspace" || !event.detail.scenarioId) return;
+      const requestedAlert = alerts.find((alert) => alert.id === event.detail.scenarioId);
+      if (requestedAlert && requestedAlert.id !== selectedAlert?.id) resetWorkspace(requestedAlert);
+    };
+    window.addEventListener("blastshield:navigate", onNavigate);
+    return () => window.removeEventListener("blastshield:navigate", onNavigate);
+  }, [alerts, resetWorkspace, selectedAlert?.id]);
 
   const loadContainment = useCallback(async (alertId, signal) => {
     const [routes, audit] = await Promise.all([
@@ -247,20 +298,33 @@ export default function App() {
   }
 
   const paths = investigation?.paths ?? EMPTY_PATHS;
+  const nodeTypes = [...new Set(paths.flatMap((path) => path.nodes.map((node) => node.type).filter(Boolean)))];
   const nodes = useMemo(() => {
-    const byId = new Map();
-    paths.forEach((path, pathIndex) => path.nodes.forEach((node, hopIndex) => {
-      if (!byId.has(node.id)) {
-        byId.set(node.id, {
-          id: node.id,
-          position: { x: hopIndex * 190, y: pathIndex * 118 + (hopIndex % 2 ? 48 : 0) },
-          ariaLabel: `${node.label}, ${node.type}, ID ${node.id}`,
-          data: { label: <><b>{node.label}</b><small>{node.type} · {node.id}</small></> },
-          className: `graph-node ${(node.type || "entity").toLowerCase()}`,
-        });
-      }
-    }));
-    return [...byId.values()];
+    const nodeById = new Map();
+    const lanes = Math.max(paths.length, 1);
+    paths.forEach((path, pathIndex) => {
+      const lane = (pathIndex - (lanes - 1) / 2) * 196;
+      path.nodes.forEach((node, depth) => {
+        const entry = nodeById.get(node.id) || { node, rank: depth, laneValues: [] };
+        entry.rank = Math.max(entry.rank, depth);
+        entry.laneValues.push(lane);
+        nodeById.set(node.id, entry);
+      });
+    });
+    const rankedNodes = [...nodeById.values()].sort((a, b) => a.rank - b.rank || a.laneValues.reduce((sum, value) => sum + value, 0) - b.laneValues.reduce((sum, value) => sum + value, 0));
+    const rankOffsets = new Map();
+    return rankedNodes.map(({ node, rank, laneValues }) => {
+      const lane = laneValues.reduce((sum, value) => sum + value, 0) / laneValues.length;
+      const peers = rankOffsets.get(rank) || 0;
+      rankOffsets.set(rank, peers + 1);
+      return {
+        id: node.id,
+        position: { x: rank * 260, y: lane + peers * 32 },
+        ariaLabel: `${node.label}, ${node.type}, ID ${node.id}`,
+        data: { label: <><b>{node.label}</b><small>{node.type} · {node.id}</small></> },
+        className: `graph-node ${(node.type || "entity").toLowerCase()}`,
+      };
+    });
   }, [paths]);
   const edges = useMemo(() => paths.flatMap((path, pathIndex) => path.edges.map((edge, edgeIndex) => ({
     id: `${pathIndex}-${edgeIndex}-${edge.source}-${edge.target}`,
@@ -269,15 +333,20 @@ export default function App() {
     label: edge.type.replaceAll("_", " "),
     type: "smoothstep",
     markerEnd: { type: MarkerType.ArrowClosed, color: "#7f95bd" },
+    labelBgStyle: { fill: "#0b1a28", fillOpacity: 0.96 },
+    labelBgPadding: [7, 4],
+    labelBgBorderRadius: 5,
+    labelStyle: { fill: "#e1edf5", fontSize: 12, fontWeight: 700 },
     ariaLabel: `${edge.source} ${edge.type} ${edge.target}`,
   }))), [paths]);
   const graphDown = apiReachable && !databaseOnline;
 
   return <div className="app-shell">
     <header className="topbar">
-      <a className="brand" href="#main" aria-label="BlastShield home">
+      <a className="brand" href="/" onClick={(event) => { event.preventDefault(); onNavigate("overview", selectedAlert?.id); }} aria-label="BlastShield overview">
         <span className="brand-mark">✦</span><span><strong>BLAST<span>SHIELD</span></strong><small>GRAPH SECURITY</small></span>
       </a>
+      <nav className="top-nav" aria-label="Main navigation"><a href="/" onClick={(event) => { event.preventDefault(); onNavigate("overview", selectedAlert?.id); }}>Overview</a><a href={workspaceHref(selectedAlert?.id)} aria-current="page" onClick={(event) => { event.preventDefault(); onNavigate("workspace", selectedAlert?.id); }}>Investigation Workspace</a></nav>
       <div className="topbar-status">
         <span className="source-badge"><Icon>◈</Icon> Synthetic FalkorDB</span>
         <span className={`health-pill ${apiReachable ? "good" : "bad"}`}><i aria-hidden="true" /> API {apiReachable ? "Reachable" : "Unreachable"}</span>
@@ -305,7 +374,7 @@ export default function App() {
           className={`scenario-tab ${selectedAlert?.id === alert.id ? "selected" : ""}`}
           aria-current={selectedAlert?.id === alert.id ? "page" : undefined}
           aria-busy={selectedAlert?.id === alert.id && investigating}
-          onClick={() => resetWorkspace(alert)}
+          onClick={() => onNavigate("workspace", alert.id)}
         ><span className="tab-index">0{String(index + 1).padStart(2, "0")}</span><span className="tab-copy"><small>{alert.id}</small><strong>{alert.title}</strong><span className="scenario-type">{scenarioType(alert.scenario)}</span></span><span className="queue-status">{selectedAlert?.id === alert.id && investigating ? "Loading" : alert.status}</span></button>)}
       </nav>}
 
@@ -332,20 +401,22 @@ export default function App() {
           <section className="graph-panel panel" aria-label="Graph path evidence">
             <div className="panel-header"><div><p className="eyebrow">Graph evidence</p><h3>Modeled access topology</h3><p className="panel-description">Actual nodes and relationships returned for this investigation.</p></div><span className="path-count">{paths.length} {paths.length === 1 ? "path" : "paths"}</span></div>
             {paths.length > 0 ? <>
-              <div className="graph-scroll"><div className="graph-canvas"><ReactFlow key={`${investigation.alert_id}-${investigation.investigation_id}`} nodes={nodes} edges={edges} fitView fitViewOptions={{ padding: 0.18, minZoom: 0.25, maxZoom: 1.15 }} nodesDraggable={false} nodesConnectable={false} proOptions={{ hideAttribution: true }}><Background color="#24415b" gap={24} /><Controls showInteractive={false} /></ReactFlow></div></div>
+            {nodeTypes.length > 0 && <div className="graph-legend" aria-label="Entity types in this graph">{nodeTypes.map((type) => <span key={type}><i className={`legend-swatch ${(type || "entity").toLowerCase()}`} aria-hidden="true" />{type}</span>)}</div>}
+            <div className="graph-scroll"><div className="graph-canvas"><ReactFlow key={`${investigation.alert_id}-${investigation.investigation_id}`} nodes={nodes} edges={edges} fitView fitViewOptions={{ padding: 0.18, minZoom: 0.25, maxZoom: 1.15 }} nodesDraggable={false} nodesConnectable={false} proOptions={{ hideAttribution: true }}><Background color="#24415b" gap={24} /><Controls showInteractive={false} /></ReactFlow></div></div>
               <div className="path-index" aria-label="All returned paths"><h4>Path sequence</h4>{paths.map((path, index) => <div key={`path-${index}`}><b>Path {String(index + 1).padStart(2, "0")}</b><span className="path-chain">{path.nodes.map((node, nodeIndex) => <span className="path-step" key={`${node.id}-${nodeIndex}`}><code>{node.id}</code>{path.edges[nodeIndex] && <em>{path.edges[nodeIndex].type.replaceAll("_", " ")}</em>}</span>)}</span></div>)}</div>
             </> : <div className={`graph-empty ${investigation.outcome}`}><strong>{investigation.outcome === "query_error" ? "Graph evidence could not be loaded" : investigation.outcome === "unknown_entity" ? "The target is not present in this graph" : investigation.outcome === "invalid_input" ? "The target input is invalid" : "No qualifying path was returned"}</strong><p>{investigation.outcome === "query_error" ? "No reachability conclusion can be drawn." : "This result describes the modeled query only; missing paths do not establish that a real environment is safe."}</p></div>}
           </section>
 
           <aside className="side-rail">
             <section className="panel briefing-panel"><div className="panel-header"><div><p className="eyebrow">Gemini + MCP</p><h3>Investigation briefing</h3></div>{agent?.grounding?.status && <span className={`grounding-badge ${agent.grounding.status}`} title={agent.grounding.status === "grounded" ? "Gemini answer passed checks against canonical graph evidence." : "Gemini answer was not accepted; a deterministic canonical summary is shown."}>{agent.grounding.status.toUpperCase()}</span>}</div>
-              <p className="panel-description">{agent?.grounding?.status === "grounded" ? "Gemini answer passed checks against the canonical evidence." : agent?.grounding?.status === "fallback" ? "Deterministic evidence summary — Gemini answer not accepted." : "Optional explanation of the structured graph result."}</p>
+              <p className="panel-description">{agent?.grounding?.status === "grounded" ? "Gemini answer passed checks against the canonical evidence." : agent?.grounding?.status === "fallback" ? agent.grounding.reason?.startsWith("gemini_") ? "Gemini was unavailable or its request failed; this is a deterministic canonical summary." : "The Gemini answer did not pass grounding checks; this is a deterministic canonical summary." : "Optional explanation of the structured graph result."}</p>
               {agentLoading && <p className="subtle" role="status">Gemini is reviewing the structured evidence…</p>}
               {agent?.stale && <div className="stale-message"><strong>Previous briefing is stale</strong><p>The graph changed after this briefing. Generate a new explanation for the current route state.</p><button className="text-button" onClick={refreshAgentBriefing} disabled={agentLoading}>Refresh briefing</button></div>}
               {agent?.answer && !agent.stale && <div className="markdown-answer"><ReactMarkdown>{agent.answer}</ReactMarkdown></div>}
               {agentError && <p className="agent-error" role="alert">AI briefing unavailable: {agentError} The structured graph result remains available.</p>}
               {!agentLoading && !agentError && !agent?.answer && !agent?.stale && <p className="subtle">The AI explanation is optional; the graph investigation remains available independently.</p>}
-              {agent?.grounding?.status === "fallback" && <small className="fallback-note">Deterministic evidence summary — Gemini answer not accepted.</small>}
+              {agent?.grounding?.status === "fallback" && <small className="fallback-note">{agent.grounding.reason?.startsWith("gemini_") ? "Gemini unavailable or failed — canonical summary shown." : "Gemini answer not accepted — canonical summary shown."}</small>}
+              {agent?.grounding?.status === "fallback" && <details className="grounding-debug"><summary>Grounding diagnostic</summary><p>Reason: {agent.grounding.reason || "not supplied"}</p>{agent.grounding.diagnostic_code && <p>Diagnostic: {agent.grounding.diagnostic_code}</p>}{agent.grounding.unsupported_entities?.length > 0 && <p>Unsupported entity claims: {agent.grounding.unsupported_entities.join(", ")}</p>}{agent.grounding.unsupported_relationships?.length > 0 && <p>Unsupported relationship claims: {agent.grounding.unsupported_relationships.join(", ")}</p>}{agent.grounding.claimed_scores?.length > 0 && <p>Rejected score claims: {agent.grounding.claimed_scores.join(", ")}</p>}</details>}
             </section>
 
             {selectedAlert.id === "BH-CONTAINMENT-4001" && <ContainmentLab containment={containment} history={history} paths={containment?.before?.paths || paths} target={investigation.target} busy={containmentBusy} onSimulate={simulateRoute} />}
@@ -364,7 +435,169 @@ export default function App() {
           <details><summary>Agent tool calls <span>{agent?.trace?.length || 0} calls</span></summary><div className="disclosure-content">{agent?.trace?.length ? agent.trace.map((trace, index) => <TraceRow trace={trace} index={index} key={`${trace.tool_name}-${index}`} routeStatuses={trace.tool_name === "get_containment_route_statuses" ? containment?.routes : null} />) : <p className="empty-detail">MCP call details appear here after a Gemini tool-assisted briefing. This trace is separate from the graph-query trace above.</p>}</div></details>
         </section>
       </>}
+      <TraversalLab graphAvailable={databaseOnline} />
     </main>
+  </div>;
+}
+
+const SCENARIO_DESCRIPTIONS = {
+  identity_investigation: "Follow an identity's modeled access relationships to sensitive data.",
+  excessive_iam_permissions: "Inspect reachability through relationships already classified as excessive.",
+  exposed_workload_blast_radius: "Trace a modeled public workload to the assets it can reach.",
+  containment_verification: "Simulate blocking a route and verify what remains reachable.",
+};
+
+function Reveal({ children, className = "" }) {
+  const elementRef = useRef(null);
+  const [visible, setVisible] = useState(false);
+  useEffect(() => {
+    const element = elementRef.current;
+    if (!element || !("IntersectionObserver" in window)) {
+      setVisible(true);
+      return undefined;
+    }
+    const observer = new IntersectionObserver(([entry]) => {
+      if (entry.isIntersecting) {
+        setVisible(true);
+        observer.disconnect();
+      }
+    }, { threshold: 0.12 });
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, []);
+  return <div ref={elementRef} className={`reveal ${visible ? "is-visible" : ""} ${className}`}>{children}</div>;
+}
+
+function TraversalLab({ graphAvailable }) {
+  const [sourceId, setSourceId] = useState("");
+  const [targetId, setTargetId] = useState("");
+  const [maxHops, setMaxHops] = useState("5");
+  const [result, setResult] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  async function compareDepth(event) {
+    event.preventDefault();
+    setBusy(true);
+    setError("");
+    try {
+      const response = await apiRequest(`${API}/api/graph/shortest-path`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ source_id: sourceId.trim(), target_id: targetId.trim(), max_hops: Number(maxHops) }),
+      });
+      setResult(response);
+    } catch (requestError) {
+      setError(requestError.message || "The bounded path query failed.");
+      setResult(null);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const found = result?.status === "path_found";
+  return <section className="traversal-lab panel" aria-labelledby="traversal-title">
+    <div className="panel-header"><div><p className="eyebrow">Bounded graph query</p><h3 id="traversal-title">Traversal depth explorer</h3><p className="panel-description">Compare a shallow search with a deeper one. Only reviewed access relationships are traversed; the depth is limited to six.</p></div><span className="source-badge">Synthetic graph</span></div>
+    <form className="traversal-form" onSubmit={compareDepth}>
+      <label>Source entity ID<input autoComplete="off" value={sourceId} onChange={(event) => setSourceId(event.target.value)} placeholder="Enter a graph entity ID" required maxLength={128} /></label>
+      <label>Target entity ID<input autoComplete="off" value={targetId} onChange={(event) => setTargetId(event.target.value)} placeholder="Enter a graph entity ID" required maxLength={128} /></label>
+      <label>Maximum hops<select value={maxHops} onChange={(event) => setMaxHops(event.target.value)}>{[1, 2, 3, 4, 5, 6].map((depth) => <option key={depth} value={depth}>{depth} {depth === 1 ? "hop" : "hops"}</option>)}</select></label>
+      <button className="primary-button" type="submit" disabled={!graphAvailable || busy || !sourceId.trim() || !targetId.trim()} aria-busy={busy}>{busy ? "Searching…" : "Run bounded search"}</button>
+    </form>
+    {!graphAvailable && <p className="empty-detail" role="status">Connect the graph database to run a traversal.</p>}
+    {error && <p className="agent-error" role="alert">{error}</p>}
+    {result && <div className={`traversal-result ${found ? "found" : "not-found"}`} role="status">
+      <div><strong>{found ? `Path found · ${result.hop_count} ${result.hop_count === 1 ? "hop" : "hops"}` : result.status === "query_error" ? "Graph query failed" : result.status === "unknown_source" ? "Source entity not found" : result.status === "unknown_target" ? "Target entity not found" : "No qualifying path within selected depth"}</strong><span>Depth limit: {result.max_hops} · {result.data_source}</span></div>
+      {result.message && <p>{result.message} This is not a safety guarantee.</p>}
+      {result.error && <p>{result.error}</p>}
+      {found && <div className="traversal-sequence" aria-label="Returned path sequence">{result.path.nodes.map((node, index) => <div key={`${node.id}-${index}`}><strong>{node.label || node.id}</strong><small>{node.type} · {node.id}</small>{result.path.edges[index] && <span>{result.path.edges[index].type.replaceAll("_", " ")} →</span>}</div>)}</div>}
+    </div>}
+    <p className="traversal-disclaimer">A missing path means none was returned within this selected depth in the synthetic graph; it does not establish real-world safety.</p>
+  </section>;
+}
+
+function HeroNetwork() {
+  return <svg className="hero-network" viewBox="0 0 640 480" role="img" aria-label="Illustration of connected security entities and a highlighted access path">
+    <defs><linearGradient id="route-gradient" x1="0" y1="0" x2="1" y2="1"><stop stopColor="#a88cff" /><stop offset="1" stopColor="#5de4d1" /></linearGradient><radialGradient id="network-glow"><stop stopColor="#6745a7" stopOpacity=".26" /><stop offset="1" stopColor="#111426" stopOpacity="0" /></radialGradient></defs>
+    <circle cx="340" cy="238" r="220" fill="url(#network-glow)" />
+    <g className="network-lines" fill="none" stroke="#546182" strokeOpacity=".42" strokeWidth="1.4"><path d="M87 93 214 151 338 93 482 154 548 276 431 365 288 330 168 399 87 286 214 151 288 330 482 154M87 93l81 306m170-306 93 272m117-89L288 330" /></g>
+    <path className="network-route" d="M87 93 214 151 288 330 431 365" fill="none" stroke="url(#route-gradient)" strokeWidth="3" strokeLinecap="round" />
+    <g className="network-nodes"><circle cx="87" cy="93" r="10"/><circle cx="214" cy="151" r="9"/><circle cx="338" cy="93" r="7"/><circle cx="482" cy="154" r="9"/><circle cx="548" cy="276" r="7"/><circle cx="431" cy="365" r="10"/><circle cx="288" cy="330" r="9"/><circle cx="168" cy="399" r="7"/><circle cx="87" cy="286" r="8"/></g>
+    <g className="network-labels"><text x="50" y="70">IDENTITY</text><text x="184" y="130">SESSION</text><text x="394" y="398">DATA ASSET</text></g>
+  </svg>;
+}
+
+function LandingPage({ initialScenarioId, onNavigate }) {
+  const [alerts, setAlerts] = useState([]);
+  const [apiState, setApiState] = useState("loading");
+  const [preview, setPreview] = useState(null);
+  const firstAlert = alerts.find((alert) => alert.id === initialScenarioId) || alerts[0];
+
+  useEffect(() => {
+    let mounted = true;
+    (async () => {
+      try {
+        const catalog = await apiRequest(`${API}/api/alerts`);
+        if (!mounted) return;
+        setAlerts(catalog.items || []);
+        setApiState("available");
+        const example = catalog.items?.find((alert) => alert.id === "BH-1042");
+        if (!example) {
+          return;
+        }
+        try {
+          const result = await apiRequest(`${API}/api/investigations`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ alert_id: example.id }),
+          });
+          if (mounted) {
+            setPreview(result);
+          }
+        } catch {
+          if (mounted) setPreview(null);
+        }
+      } catch {
+        if (mounted) {
+          setApiState("unavailable");
+        }
+      }
+    })();
+    return () => { mounted = false; };
+  }, []);
+
+  const openWorkspace = (scenarioId = firstAlert?.id || "") => onNavigate("workspace", scenarioId);
+  const examplePath = preview?.paths?.[0];
+
+  return <div className="app-shell landing-shell">
+    <header className="topbar landing-topbar">
+      <a className="brand" href="/" aria-label="BlastShield overview"><span className="brand-mark">✦</span><span><strong>BLAST<span>SHIELD</span></strong><small>GRAPH SECURITY</small></span></a>
+      <nav className="top-nav" aria-label="Main navigation"><a href="/" aria-current="page">Overview</a><a href={workspaceHref(firstAlert?.id)} onClick={(event) => { event.preventDefault(); openWorkspace(); }}>Investigation Workspace</a></nav>
+      <div className="topbar-status"><span className="source-badge"><Icon>◈</Icon> Synthetic FalkorDB</span><span className={`health-pill ${apiState === "available" ? "good" : "bad"}`}><i aria-hidden="true" />API {apiState === "loading" ? "Checking" : apiState === "available" ? "Available" : "Unavailable"}</span></div>
+    </header>
+
+    <main className="landing-main">
+      <section className="landing-hero" aria-labelledby="landing-title">
+        <div className="hero-copy"><p className="eyebrow hero-eyebrow"><span /> GRAPH-POWERED SECURITY INVESTIGATION</p><h1 id="landing-title">See the path.<br /><span>Understand the risk.</span><br />Verify the response.</h1><p className="hero-subtitle">Evidence-backed security investigations that turn hidden cloud relationships into defensible response decisions.</p><div className="hero-actions"><a className="primary-button hero-primary" href={workspaceHref(firstAlert?.id)} onClick={(event) => { event.preventDefault(); openWorkspace(); }}>Launch Investigation Workspace <span aria-hidden="true">↗</span></a><a className="secondary-button hero-secondary" href="#how-it-works">Explore how it works <span aria-hidden="true">↓</span></a></div><p className="hero-truth">Local synthetic graph · Evidence-first · Containment simulation only</p></div>
+        <div className="hero-art"><HeroNetwork /><div className="hero-art-caption"><span className="caption-dot" /> Modeled relationships, made inspectable</div></div>
+        <div className="hero-orb hero-orb-one" aria-hidden="true" /><div className="hero-orb hero-orb-two" aria-hidden="true" />
+      </section>
+
+      {apiState === "unavailable" && <div className="notice-banner warning" role="status"><Icon>!</Icon><div><strong>Investigation API unavailable</strong><span>You can explore how the product works. Live scenario cards and graph evidence will appear when the local API is available.</span></div></div>}
+
+      <Reveal><section className="landing-section problem-section" id="problem"><div className="section-copy"><p className="eyebrow">THE PROBLEM</p><h2>Security risk hides in relationships.</h2><p>An identity may not directly access a critical database. Potential reachability can emerge through a session, a workload, and an assumed IAM role.</p><p>A graph makes those recorded relationships traversable—so an investigator can inspect the actual route instead of relying on a disconnected list of permissions.</p></div><div className="relationship-motif" aria-label="Illustrative chain: identity to session to workload to role to data asset"><span className="motif-label">Illustrative relationship chain</span><div className="motif-chain"><b>Identity</b><i>HAS_SESSION</i><b>Session</b><i>CAN_ACCESS</i><b>Workload</b><i>RUNS_AS</i><b>IAM role</b><i>CAN_READ</i><b>Data</b></div><small>Examples of relationship types used in the synthetic graph.</small></div></section></Reveal>
+
+      <Reveal><section className="landing-section process-section" id="how-it-works"><div className="section-heading"><p className="eyebrow">HOW IT WORKS</p><h2>From finding to verifiable evidence.</h2><p>A straightforward workflow, grounded in the graph.</p></div><div className="process-grid"><article className="process-card"><span className="step-number">01</span><div className="step-symbol" aria-hidden="true">⌕</div><h3>Investigate</h3><p>Select a security finding and identify its modeled target from the canonical alert catalog.</p></article><article className="process-card"><span className="step-number">02</span><div className="step-symbol" aria-hidden="true">⌘</div><h3>Trace</h3><p>FalkorDB runs reviewed graph queries and returns the actual access paths and relationships.</p></article><article className="process-card"><span className="step-number">03</span><div className="step-symbol" aria-hidden="true">↗</div><h3>Explain and verify</h3><p>Gemini explains returned evidence through fixed MCP tools. A synthetic route change is followed by a fresh graph query.</p></article></div></section></Reveal>
+
+      <Reveal><section className="landing-section scenarios-section" id="scenarios"><div className="section-heading section-heading-row"><div><p className="eyebrow">FOUR INVESTIGATION SCENARIOS</p><h2>Start with a concrete question.</h2></div><p>Targets and titles are loaded from the API catalog.</p></div>{alerts.length ? <div className="landing-scenario-grid">{alerts.map((alert, index) => <article className="landing-scenario-card" key={alert.id}><div className="scenario-card-top"><span className="scenario-glyph" aria-hidden="true">{["⌖", "◇", "▣", "↗"][index % 4]}</span><span className="landing-alert-id">{alert.id}</span></div><p className="eyebrow scenario-card-type">{scenarioType(alert.scenario)}</p><h3>{alert.title}</h3><p className="scenario-description">{SCENARIO_DESCRIPTIONS[alert.scenario] || "Inspect modeled graph evidence for this security finding."}</p><p className="scenario-target"><span>Target</span><b>{alert.target_type} · {alert.target_id}</b></p><a className="scenario-link" href={workspaceHref(alert.id)} onClick={(event) => { event.preventDefault(); openWorkspace(alert.id); }}>Try this scenario <span aria-hidden="true">→</span></a></article>)}</div> : <div className="catalog-empty" role="status"><strong>{apiState === "loading" ? "Loading scenario catalog…" : "Scenario catalog unavailable"}</strong><p>{apiState === "unavailable" ? "No live scenario claims are shown while the API is offline." : "The API returned no scenarios."}</p><a className="text-button" href={workspaceHref()} onClick={(event) => { event.preventDefault(); openWorkspace(); }}>Open workspace</a></div>}</section></Reveal>
+
+      <Reveal><section className="landing-section graph-value-section" id="graph-reasoning"><div className="graph-value-copy"><p className="eyebrow">WHY GRAPH REASONING</p><h2>Don't just find an alert. Discover the path behind it.</h2><div className="capability-list"><article><span>01</span><div><h3>Graph-derived evidence</h3><p>Paths are returned by FalkorDB queries, with their nodes and relationships available to inspect.</p></div></article><article><span>02</span><div><h3>Bounded agent tools</h3><p>Gemini can call fixed, reviewed investigation tools through MCP—not generate arbitrary Cypher.</p></div></article><article><span>03</span><div><h3>Verifiable response</h3><p>Containment is simulated in the synthetic graph, then a fresh query checks what remains reachable.</p></div></article></div></div><div className="path-example panel"><div className="panel-header"><div><p className="eyebrow">{preview ? "LIVE STRUCTURED RESULT" : "TEACHING EXAMPLE"}</p><h3>{preview ? "Identity access path" : "A graph path, illustrated"}</h3></div>{preview && <span className={`outcome-badge ${preview.outcome}`}>{OUTCOME_LABELS[preview.outcome] || preview.outcome}</span>}</div>{preview && examplePath ? <><p className="example-note">Actual path returned by the structured investigation endpoint · {preview.data_source}</p><div className="example-path" aria-label="Actual returned path">{examplePath.nodes.map((node, index) => <div className="example-node" key={`${node.id}-${index}`}><strong>{node.label || node.id}</strong><small>{node.type} · {node.id}</small>{examplePath.edges[index] && <span className="example-edge">{examplePath.edges[index].type.replaceAll("_", " ")} <b aria-hidden="true">→</b></span>}</div>)}</div></> : preview ? <div className="example-empty"><strong>{preview.summary}</strong><p>This is the current API result; no example path was returned.</p></div> : <><p className="example-note">Illustrative only—not a live or verified graph result.</p><div className="example-path illustrative" aria-label="Illustrative path, not live graph data"><div className="example-node"><strong>Identity</strong><small>Example entity</small><span className="example-edge">HAS_SESSION <b aria-hidden="true">→</b></span></div><div className="example-node"><strong>Session</strong><small>Example entity</small><span className="example-edge">CAN_ACCESS <b aria-hidden="true">→</b></span></div><div className="example-node"><strong>Workload</strong><small>Example entity</small><span className="example-edge">RUNS_AS <b aria-hidden="true">→</b></span></div><div className="example-node"><strong>IAM role</strong><small>Example entity</small><span className="example-edge">CAN_READ <b aria-hidden="true">→</b></span></div><div className="example-node"><strong>Data asset</strong><small>Example entity</small></div></div></>}</div></section></Reveal>
+
+      <Reveal><section className="landing-trust-section" id="transparency"><div><p className="eyebrow">TRANSPARENCY</p><h2>Built for evidence, not assumptions.</h2><p>BlastShield is a local synthetic-data investigation prototype—not a live cloud security platform.</p></div><ul><li>Results describe modeled potential reachability; they do not prove exploitation.</li><li>Deterministic demonstration risk rules are not calibrated breach probabilities.</li><li>Containment changes the synthetic graph only; no live cloud session is modified.</li><li>No qualifying path is not a guarantee of real-world safety.</li></ul></section></Reveal>
+
+      <section className="landing-final-cta"><div><p className="eyebrow">EVIDENCE YOU CAN FOLLOW</p><h2>Open the investigation workspace.</h2><p>Choose a scenario, follow its modeled path, and inspect the evidence for yourself.</p></div><a className="primary-button hero-primary" href={workspaceHref(firstAlert?.id)} onClick={(event) => { event.preventDefault(); openWorkspace(); }}>Open BlastShield Workspace <span aria-hidden="true">↗</span></a></section>
+    </main>
+    <footer className="landing-footer"><a className="footer-brand" href="/">BlastShield</a><span>WeMakeDevs Graph Hacks · Track 01</span><nav aria-label="Footer links"><a href="#problem">The problem</a><a href="#how-it-works">How it works</a><a href="#transparency">Transparency</a></nav></footer>
   </div>;
 }
 

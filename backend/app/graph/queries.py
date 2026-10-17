@@ -239,9 +239,9 @@ ORDER BY route.route_id
 
 # This is deliberately a reviewed allow-list. The shortest-path tool does not
 # traverse arbitrary graph relationships or accept Cypher from the caller.
-FIND_SHORTEST_ACCESS_PATH_QUERY = """
+_SHORTEST_ACCESS_PATH_QUERY_TEMPLATE = """
 MATCH p = (source {id: $source_id})
-    -[*1..6]->
+    -[*1..__MAX_HOPS__]->
     (target {id: $target_id})
 WHERE all(rel IN relationships(p) WHERE
     type(rel) IN ['HAS_SESSION', 'CAN_ACCESS', 'RUNS_AS', 'CAN_ASSUME', 'CAN_READ']
@@ -263,3 +263,12 @@ RETURN
 ORDER BY hop_count ASC
 LIMIT 1
 """
+
+# FalkorDB versions used for the demo do not consistently accept a parameter
+# in a variable-length relationship bound. Keep all supported bounds in this
+# small, reviewed allow-list; caller input never becomes Cypher text.
+FIND_SHORTEST_ACCESS_PATH_QUERIES = {
+    depth: _SHORTEST_ACCESS_PATH_QUERY_TEMPLATE.replace("__MAX_HOPS__", str(depth))
+    for depth in range(1, 7)
+}
+FIND_SHORTEST_ACCESS_PATH_QUERY = FIND_SHORTEST_ACCESS_PATH_QUERIES[6]

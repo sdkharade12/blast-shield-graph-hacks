@@ -193,6 +193,9 @@ def seed_blastshield_graph(graph) -> None:
             scope_check.intended_scope = 'AUDIT_REPORTING',
             scope_check.reason = 'Role access stays within the audit reporting environment'
         MERGE (staging_role)-[:CAN_READ]->(report)
+        // Second modeled route to the same cache: compare a direct four-hop
+        // path with a five-hop role-assumption alternative.
+        MERGE (staging_role)-[:CAN_READ]->(cache)
     """)
 
     print("BlastShield graph seeding complete.")

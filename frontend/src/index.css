@@ -14,7 +14,7 @@
 
 * { box-sizing: border-box; }
 
-html { min-width: 320px; min-height: 100%; background: #071522; }
+html { min-width: 320px; min-height: 100%; background: #071522; scroll-behavior: smooth; }
 
 body {
   min-width: 320px;
