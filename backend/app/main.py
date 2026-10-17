@@ -1,12 +1,14 @@
+import asyncio
 from typing import Literal
 import logging
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field, StrictInt
+from pydantic import BaseModel, Field, StrictBool, StrictInt
 
 from app.agent.gemini_service import run_gemini_investigation
 from app.agent.gemini_service import _deterministic_summary
+from app.agent.response_agent import run_autonomous_response
 from app.graph.connection import graph_connection
 from app.integration import (
     get_containment_status,
@@ -19,6 +21,8 @@ from app.services.graph_service import find_shortest_access_path
 
 logger = logging.getLogger(__name__)
 from app.schemas import InvestigationRequest, InvestigationResponse
+
+_response_run_lock = asyncio.Lock()
 
 
 app = FastAPI(
@@ -45,6 +49,12 @@ class ShortestPathRequest(BaseModel):
     source_id: str = Field(min_length=1, max_length=128)
     target_id: str = Field(min_length=1, max_length=128)
     max_hops: StrictInt = Field(default=6, ge=1, le=6)
+
+
+class AutonomousResponseRequest(BaseModel):
+    alert_id: str = Field(min_length=1, max_length=64)
+    confirmed: StrictBool
+    max_actions: StrictInt = Field(default=3, ge=1, le=3)
 
 
 @app.get("/api/health")
@@ -116,6 +126,23 @@ async def investigate_with_agent(request: InvestigationRequest) -> dict:
         "data_source": "synthetic_falkordb",
         "provenance": "Synthetic seeded FalkorDB graph; not a live cloud tenant.",
     }
+
+
+@app.post("/api/agent/respond")
+async def autonomous_response(request: AutonomousResponseRequest) -> dict:
+    """Run a confirmed, bounded response simulation against the synthetic graph only."""
+    from app.integration import find_alert
+
+    alert = find_alert(request.alert_id.strip())
+    if not alert:
+        raise HTTPException(status_code=404, detail={"status": "unknown_alert"})
+    if request.confirmed is not True:
+        raise HTTPException(status_code=400, detail={"status": "confirmation_required", "message": "Explicit confirmation is required before any synthetic response action."})
+    async with _response_run_lock:
+        result = await run_autonomous_response(alert["id"], request.max_actions)
+    if result.get("status") == "unknown_alert":
+        raise HTTPException(status_code=404, detail=result)
+    return result
 
 
 def _agent_fallback(alert_id: str, reason: str, diagnostic_code: str) -> dict:

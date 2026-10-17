@@ -12,6 +12,7 @@ from app import integration, main
 from app.graph.connection import graph_connection
 from app.graph.seed import seed_blastshield_graph
 from app.services import graph_service
+from app.agent.response_service import response_candidates, execute_response_action
 
 
 LIVE_ENABLED = os.getenv("BLASTSHIELD_RUN_LIVE_TESTS") == "1"
@@ -19,6 +20,38 @@ LIVE_ENABLED = os.getenv("BLASTSHIELD_RUN_LIVE_TESTS") == "1"
 
 @unittest.skipUnless(LIVE_ENABLED, "set BLASTSHIELD_RUN_LIVE_TESTS=1 to query FalkorDB")
 class LiveFalkorDBTests(unittest.TestCase):
+    def test_response_action_verifies_and_restores_original_synthetic_permission_state(self):
+        alert_id = "BH-IAM-2001"
+        with graph_connection() as graph:
+            rows = graph.ro_query(
+                "MATCH (:IAMRole {id: 'analytics-role'})-[r:CAN_ASSUME {assessment: 'EXCESSIVE'}]->(:IAMRole {id: 'production-role'}) RETURN r.response_status"
+            ).result_set
+        self.assertTrue(rows, "seeded excessive permission edge is required")
+        original = rows[0][0]
+        try:
+            with graph_connection() as graph:
+                graph.query(
+                    "MATCH (:IAMRole {id: 'analytics-role'})-[r:CAN_ASSUME {assessment: 'EXCESSIVE'}]->(:IAMRole {id: 'production-role'}) SET r.response_status = 'ACTIVE' RETURN r.response_status"
+                )
+            candidates = response_candidates(alert_id)["items"]
+            choice = next(item for item in candidates if item["action_type"] == "BLOCK_EXCESSIVE_ASSUMPTION")
+            result = execute_response_action(alert_id, choice["action_id"], choice["target_id"])
+            self.assertEqual(result["status"], "verified")
+            self.assertEqual(result["after"]["outcome"], "no_path_in_graph")
+            self.assertEqual(result["action"]["after_state"], "BLOCKED")
+        finally:
+            with graph_connection() as graph:
+                if original is None:
+                    graph.query(
+                        "MATCH (:IAMRole {id: 'analytics-role'})-[r:CAN_ASSUME {assessment: 'EXCESSIVE'}]->(:IAMRole {id: 'production-role'}) REMOVE r.response_status RETURN r.assessment"
+                    )
+                else:
+                    graph.query(
+                        "MATCH (:IAMRole {id: 'analytics-role'})-[r:CAN_ASSUME {assessment: 'EXCESSIVE'}]->(:IAMRole {id: 'production-role'}) SET r.response_status = $state RETURN r.assessment",
+                        {"state": original},
+                    )
+        self.assertEqual(integration.investigate_alert(alert_id).outcome, "path_found")
+
     def test_all_canonical_scenarios_query_seeded_graph(self):
         results = [integration.investigate_alert(alert["id"]) for alert in integration.ALERT_CATALOG]
         self.assertEqual(len(results), 4)

@@ -11,12 +11,13 @@ Cloud incidents are difficult to triage when identities, sessions, workloads, ro
 ```text
 React investigation dashboard
   ├─ FastAPI: alert catalog, canonical investigation, health, containment
-  └─ FastAPI agent endpoint: Gemini explanation ↔ MCP tools
+  ├─ Read-only agent endpoint: Gemini explanation ↔ investigation MCP tools
+  └─ Confirmed response endpoint: Gemini decision MCP → controller → response-only MCP action → fresh graph verification
                                   └─ canonical investigation services
                                       └─ FalkorDB synthetic graph
 ```
 
-The structured investigation endpoint and optional Gemini endpoint are separate. The graph service owns canonical outcomes and evidence; the model can explain that evidence but cannot redefine it. If grounding checks fail or Gemini is unavailable, the agent path falls back to the canonical investigation summary. Health reports API and database status separately.
+The structured investigation endpoint and optional Gemini investigation endpoint are separate. The graph service owns canonical outcomes and evidence; the read-only model can explain that evidence but cannot redefine it. If grounding checks fail or Gemini is unavailable, the agent path falls back to the canonical investigation summary. Autonomous response is a separate opt-in endpoint: it requires explicit confirmation, is bounded to at most three graph-derived actions, and gives Gemini no mutation tool. The controller validates each model choice, invokes a separate response-only MCP capability, and re-queries the graph after every action. Writes affect synthetic FalkorDB response state only. Health reports API and database status separately.
 
 ## Scenarios and seeded targets
 
@@ -31,7 +32,7 @@ Seed data is synthetic. The supplemental audit fixture is intentionally disconne
 
 ## Graph and evidence model
 
-Core labels are `Identity`, `Session`, `Workload`, `IAMRole`, and `DataAsset`. Investigated access relationships are `HAS_SESSION`, `CAN_ACCESS`, `RUNS_AS`, `CAN_ASSUME`, and `CAN_READ`. Relationship properties carry scenario facts such as route ID, containment status, permission classification, scope, and sensitivity. Containment updates only the selected synthetic `HAS_SESSION` route’s `containment_status` property.
+Core labels are `Identity`, `Session`, `Workload`, `IAMRole`, and `DataAsset`. Investigated access relationships are `HAS_SESSION`, `CAN_ACCESS`, `RUNS_AS`, `CAN_ASSUME`, and `CAN_READ`. Relationship properties carry scenario facts such as route ID, containment status, permission classification, scope, and sensitivity. Manual Scenario 4 containment updates only the selected synthetic `HAS_SESSION` route’s `containment_status`. Autonomous response uses separate `response_status` properties for session and IAM edges, and `response_status='ISOLATED'` for workload response state; it does not overwrite the workload's observed `status='RUNNING'`.
 
 Canonical outcomes distinguish `path_found`, `no_path_in_graph`, `unknown_entity`, `invalid_input`, and `query_error`; an unknown alert is separately reported as `unknown_alert`. “No path” means no qualifying path was found by the modeled query, not proof of safety. A path is represented reachability, not proof of exploitation. The IAM scenario consumes the graph’s existing `EXCESSIVE` classification; it does not independently compute least privilege.
 
@@ -108,6 +109,7 @@ To reset only the demo containment routes to `ACTIVE`, stop the API if needed an
 4. Use the **Traversal depth explorer** with source `auditor_02` and target `staging-report`: a four-hop limit returns no qualifying path; a five-hop limit returns the route through `CAN_ASSUME`. This is a bounded search result, not a safety guarantee.
 5. Open containment. The demo starts with both routes active after `scenario4_seed`: block `primary`, inspect the verified remaining alternate route, then block `alternate` and inspect the verified no-path result. The UI requires explicit confirmation.
 6. Rerun the scenario-4 seed after the demo if you want the next presentation to begin with both routes active.
+7. For the autonomous response demo, investigate a scenario with a returned path, choose **Review and confirm response run**, and confirm once. Show the decision trace and fresh post-action investigation. The run stops when no modeled path remains, Gemini cannot make a validated choice, verification fails, or the three-action limit is reached. Rerun `python -m app.graph.seed` to reset Scenarios 1–3 response properties and `python -m app.graph.scenario4_seed` to reset Scenario 4 routes.
 
 ## API endpoints
 
@@ -116,6 +118,7 @@ To reset only the demo containment routes to `ACTIVE`, stop the API if needed an
 - `POST /api/investigations` — structured canonical graph result.
 - `POST /api/graph/shortest-path` — bounded source/target path search with strict `max_hops` from 1–6.
 - `POST /api/agent/investigate` — optional grounded Gemini/MCP explanation and trace.
+- `POST /api/agent/respond` — explicitly confirmed Gemini-selected synthetic response run; `max_actions` is strictly limited to 1–3. Only this endpoint can invoke the response-only action MCP server.
 - `GET /api/containment/{alert_id}` — current modeled routes and active-path result.
 - `POST /api/containment/simulate` — confirmed, synthetic route block followed by graph verification.
 - `GET /api/containment/{alert_id}/history` — in-process action audit history (cleared on API restart).

@@ -15,7 +15,7 @@ LIMIT 1
 FIND_SENSITIVE_RESOURCE_PATHS_QUERY = """
 MATCH p =
     (i:Identity {id: $identity_id})
-    -[:HAS_SESSION]->
+    -[session_edge:HAS_SESSION]->
     (s:Session {status: 'ACTIVE'})
     -[:CAN_ACCESS]->
     (w:Workload {status: 'RUNNING'})
@@ -25,6 +25,7 @@ MATCH p =
     (pr:IAMRole)
     -[:CAN_READ]->
     (d:DataAsset {sensitivity: 'critical'})
+WHERE coalesce(session_edge.response_status, 'ACTIVE') = 'ACTIVE'
 
 RETURN
     [
@@ -66,6 +67,7 @@ MATCH p =
     (pr:IAMRole)
     -[:CAN_READ]->
     (d:DataAsset {sensitivity: 'critical'})
+WHERE coalesce(permission.response_status, 'ACTIVE') = 'ACTIVE'
 
 RETURN
     [
@@ -119,6 +121,7 @@ MATCH p =
     (r:IAMRole)
     -[:CAN_READ]->
     (d:DataAsset {sensitivity: 'critical'})
+WHERE coalesce(w.response_status, 'ACTIVE') <> 'ISOLATED'
 
 RETURN
     [
@@ -246,6 +249,10 @@ MATCH p = (source {id: $source_id})
 WHERE all(rel IN relationships(p) WHERE
     type(rel) IN ['HAS_SESSION', 'CAN_ACCESS', 'RUNS_AS', 'CAN_ASSUME', 'CAN_READ']
     AND (type(rel) <> 'HAS_SESSION' OR coalesce(rel.containment_status, 'ACTIVE') = 'ACTIVE')
+    AND coalesce(rel.response_status, 'ACTIVE') <> 'BLOCKED'
+)
+AND all(node IN nodes(p) WHERE
+    labels(node)[0] <> 'Workload' OR coalesce(node.response_status, 'ACTIVE') <> 'ISOLATED'
 )
 RETURN
     [node IN nodes(p) | {

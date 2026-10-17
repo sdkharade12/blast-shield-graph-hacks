@@ -6,6 +6,26 @@ import "./App.css";
 
 const API = "http://127.0.0.1:8000";
 const EMPTY_PATHS = [];
+
+function normalizeBriefingArrows(markdown) {
+  return String(markdown || "")
+    .replace(/\$\\rightarrow\$/g, "→")
+    .replace(/\\rightarrow\b/g, "→")
+    .replace(/\\to\b/g, "→");
+}
+
+function immutableSnapshot(value) {
+  const copy = typeof structuredClone === "function"
+    ? structuredClone(value)
+    : JSON.parse(JSON.stringify(value));
+  const freeze = (item) => {
+    if (!item || typeof item !== "object" || Object.isFrozen(item)) return item;
+    Object.values(item).forEach(freeze);
+    return Object.freeze(item);
+  };
+  return freeze(copy);
+}
+
 const OUTCOME_LABELS = {
   path_found: "Potential access path identified",
   no_path_in_graph: "No qualifying path in modeled graph",
@@ -77,10 +97,18 @@ export default function App() {
 function Workspace({ initialScenarioId, onNavigate }) {
   const [alerts, setAlerts] = useState([]);
   const [selectedAlert, setSelectedAlert] = useState(null);
+  const selectedAlertRef = useRef(null);
   const [investigation, setInvestigation] = useState(null);
   const [containment, setContainment] = useState(null);
   const [history, setHistory] = useState([]);
   const [agent, setAgent] = useState(null);
+  const [responseRun, setResponseRun] = useState(null);
+  const [preActionSnapshot, setPreActionSnapshot] = useState(null);
+  const [responseCurrentRoutes, setResponseCurrentRoutes] = useState(null);
+  const [graphView, setGraphView] = useState("after");
+  const [responseConfirmOpen, setResponseConfirmOpen] = useState(false);
+  const [responseBusy, setResponseBusy] = useState(false);
+  const [responseError, setResponseError] = useState("");
   const [caseCache, setCaseCache] = useState({});
   const [apiReachable, setApiReachable] = useState(false);
   const [databaseOnline, setDatabaseOnline] = useState(false);
@@ -93,6 +121,10 @@ function Workspace({ initialScenarioId, onNavigate }) {
   const requestVersion = useRef(0);
   const controllerRef = useRef(null);
   const initialScenarioIdRef = useRef(initialScenarioId);
+
+  useEffect(() => {
+    selectedAlertRef.current = selectedAlert;
+  }, [selectedAlert]);
 
   function cacheCase(alertId, patch) {
     setCaseCache((current) => ({
@@ -111,6 +143,12 @@ function Workspace({ initialScenarioId, onNavigate }) {
     setContainment(snapshot.containment || null);
     setHistory(snapshot.history || []);
     setAgent(snapshot.agent || null);
+    setResponseRun(snapshot.responseRun || null);
+    setPreActionSnapshot(snapshot.preActionSnapshot || null);
+    setResponseCurrentRoutes(snapshot.responseCurrentRoutes ?? null);
+    setGraphView(snapshot.preActionSnapshot ? "compare" : "after");
+    setResponseConfirmOpen(false);
+    setResponseError("");
     setInvestigationError("");
     setAgentError("");
     setInvestigating(false);
@@ -189,7 +227,7 @@ function Workspace({ initialScenarioId, onNavigate }) {
   }
 
   async function investigate() {
-    if (!selectedAlert || !databaseOnline) return;
+    if (!selectedAlert || !databaseOnline || responseBusy) return;
     const alert = selectedAlert;
     const version = ++requestVersion.current;
     controllerRef.current?.abort();
@@ -200,8 +238,13 @@ function Workspace({ initialScenarioId, onNavigate }) {
     setContainment(null);
     setHistory([]);
     setAgent(null);
+    setPreActionSnapshot(null);
+    setResponseRun(null);
+    setResponseCurrentRoutes(null);
+    setGraphView("after");
     setInvestigationError("");
     setAgentError("");
+    cacheCase(alert.id, { preActionSnapshot: null, responseRun: null, responseCurrentRoutes: null });
     try {
       const result = await apiRequest(`${API}/api/investigations`, {
         method: "POST",
@@ -212,7 +255,7 @@ function Workspace({ initialScenarioId, onNavigate }) {
       if (version !== requestVersion.current) return;
       setInvestigation(result);
       cacheCase(alert.id, { investigation: result });
-      if (alert.id === "BH-CONTAINMENT-4001") {
+      if (alert.scenario === "containment_verification") {
         try {
           const status = await loadContainment(alert.id, controller.signal);
           if (version !== requestVersion.current) return;
@@ -258,6 +301,11 @@ function Workspace({ initialScenarioId, onNavigate }) {
     const version = ++requestVersion.current;
     setContainmentBusy(true);
     setInvestigationError("");
+    setPreActionSnapshot(null);
+    setResponseRun(null);
+    setResponseCurrentRoutes(null);
+    setGraphView("after");
+    cacheCase(alert.id, { preActionSnapshot: null, responseRun: null, responseCurrentRoutes: null });
     // Immediately invalidate the old graph view and briefing; they describe pre-action state.
     setInvestigation(null);
     cacheCase(alert.id, { investigation: null, agent: null });
@@ -297,49 +345,70 @@ function Workspace({ initialScenarioId, onNavigate }) {
     }
   }
 
-  const paths = investigation?.paths ?? EMPTY_PATHS;
-  const nodeTypes = [...new Set(paths.flatMap((path) => path.nodes.map((node) => node.type).filter(Boolean)))];
-  const nodes = useMemo(() => {
-    const nodeById = new Map();
-    const lanes = Math.max(paths.length, 1);
-    paths.forEach((path, pathIndex) => {
-      const lane = (pathIndex - (lanes - 1) / 2) * 196;
-      path.nodes.forEach((node, depth) => {
-        const entry = nodeById.get(node.id) || { node, rank: depth, laneValues: [] };
-        entry.rank = Math.max(entry.rank, depth);
-        entry.laneValues.push(lane);
-        nodeById.set(node.id, entry);
+  async function runAutonomousResponse() {
+    const alert = selectedAlert;
+    if (!alert || !databaseOnline || responseBusy) return;
+    const snapshot = immutableSnapshot({
+      snapshot_id: `BEFORE-${Date.now()}`,
+      scenario_id: alert.id,
+      captured_at: new Date().toISOString(),
+      investigation,
+      initial_outcome: investigation?.outcome || "not_returned",
+      path_count: investigation?.paths?.length || 0,
+      route_statuses: containment?.routes || [],
+    });
+    setPreActionSnapshot(snapshot);
+    setResponseRun(null);
+    setResponseCurrentRoutes(null);
+    setGraphView("before");
+    cacheCase(alert.id, { preActionSnapshot: snapshot, responseRun: null, responseCurrentRoutes: null });
+    setResponseBusy(true);
+    setResponseConfirmOpen(false);
+    setResponseError("");
+    try {
+      const result = await apiRequest(`${API}/api/agent/respond`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ alert_id: alert.id, confirmed: true, max_actions: 3 }),
       });
-    });
-    const rankedNodes = [...nodeById.values()].sort((a, b) => a.rank - b.rank || a.laneValues.reduce((sum, value) => sum + value, 0) - b.laneValues.reduce((sum, value) => sum + value, 0));
-    const rankOffsets = new Map();
-    return rankedNodes.map(({ node, rank, laneValues }) => {
-      const lane = laneValues.reduce((sum, value) => sum + value, 0) / laneValues.length;
-      const peers = rankOffsets.get(rank) || 0;
-      rankOffsets.set(rank, peers + 1);
-      return {
-        id: node.id,
-        position: { x: rank * 260, y: lane + peers * 32 },
-        ariaLabel: `${node.label}, ${node.type}, ID ${node.id}`,
-        data: { label: <><b>{node.label}</b><small>{node.type} · {node.id}</small></> },
-        className: `graph-node ${(node.type || "entity").toLowerCase()}`,
-      };
-    });
-  }, [paths]);
-  const edges = useMemo(() => paths.flatMap((path, pathIndex) => path.edges.map((edge, edgeIndex) => ({
-    id: `${pathIndex}-${edgeIndex}-${edge.source}-${edge.target}`,
-    source: edge.source,
-    target: edge.target,
-    label: edge.type.replaceAll("_", " "),
-    type: "smoothstep",
-    markerEnd: { type: MarkerType.ArrowClosed, color: "#7f95bd" },
-    labelBgStyle: { fill: "#0b1a28", fillOpacity: 0.96 },
-    labelBgPadding: [7, 4],
-    labelBgBorderRadius: 5,
-    labelStyle: { fill: "#e1edf5", fontSize: 12, fontWeight: 700 },
-    ariaLabel: `${edge.source} ${edge.type} ${edge.target}`,
-  }))), [paths]);
+      const tiedSnapshot = immutableSnapshot({ ...snapshot, response_run_id: result.run_id || null });
+      cacheCase(alert.id, { preActionSnapshot: tiedSnapshot, responseRun: result });
+      if (selectedAlertRef.current?.id === alert.id) {
+        setPreActionSnapshot(tiedSnapshot);
+        setResponseRun(result);
+        setGraphView("compare");
+        if (result.final_investigation) {
+          setInvestigation(result.final_investigation);
+          setAgent({ stale: true });
+          cacheCase(alert.id, { investigation: result.final_investigation, agent: { stale: true }, responseRun: result });
+        }
+      }
+      if (alert.id === "BH-CONTAINMENT-4001") {
+        try {
+          const latest = await loadContainment(alert.id);
+          const statuses = latest.routes?.routes || [];
+          cacheCase(alert.id, { containment: latest.routes, history: latest.history, responseCurrentRoutes: statuses });
+          if (selectedAlertRef.current?.id === alert.id) {
+            setContainment(latest.routes);
+            setHistory(latest.history);
+            setResponseCurrentRoutes(statuses);
+          }
+        } catch {
+          // Keep the exact per-action verification from the response; do not infer a final route state.
+        }
+      }
+    } catch (error) {
+      if (selectedAlertRef.current?.id === alert.id) setResponseError(error.message || "Autonomous response simulation failed.");
+    } finally {
+      setResponseBusy(false);
+    }
+  }
+
+  const paths = investigation?.paths ?? EMPTY_PATHS;
   const graphDown = apiReachable && !databaseOnline;
+  const hasBeforeAfter = preActionSnapshot?.scenario_id === selectedAlert?.id;
+  const responseHistory = hasBeforeAfter ? responseRun?.actions || [] : [];
+  const displayedRouteStatuses = responseRun ? responseCurrentRoutes || [] : containment?.routes || [];
 
   return <div className="app-shell">
     <header className="topbar">
@@ -381,10 +450,18 @@ function Workspace({ initialScenarioId, onNavigate }) {
       {selectedAlert && <section className="selected-case">
         <div className="case-identity"><div><p className="eyebrow">Selected investigation · {selectedAlert.id}</p><h2>{selectedAlert.title}</h2></div></div>
         <div className="case-target"><span>Investigation target</span><strong>{investigation?.target?.type || selectedAlert.target_type || "—"}</strong><code>{investigation?.target?.id || selectedAlert.target_id || "Target not supplied"}</code></div>
-        <button className="primary-button" disabled={!databaseOnline || investigating} onClick={investigate} aria-busy={investigating}>
-          <Icon>{investigating ? "◌" : "⌁"}</Icon>{investigating ? "Investigating…" : investigation ? "Run again" : "Investigate"}
+        <button className="primary-button" disabled={!databaseOnline || investigating || responseBusy} onClick={investigate} aria-busy={investigating || responseBusy}>
+          <Icon>{investigating || responseBusy ? "◌" : "⌁"}</Icon>{responseBusy ? "Response running…" : investigating ? "Investigating…" : investigation ? "Run again" : "Investigate"}
         </button>
       </section>}
+
+      {selectedAlert && investigation && <AutonomousResponsePanel
+        alert={selectedAlert} investigation={investigation} result={responseRun}
+        snapshot={preActionSnapshot} currentRoutes={displayedRouteStatuses}
+        busy={responseBusy} confirmOpen={responseConfirmOpen} error={responseError}
+        onRequestConfirm={() => { setResponseError(""); setResponseConfirmOpen(true); }}
+        onCancel={() => setResponseConfirmOpen(false)} onConfirm={runAutonomousResponse}
+      />}
 
       {investigationError && <div className="notice-banner error"><Icon>!</Icon><div><strong>Structured investigation error</strong><span>{investigationError}</span></div></div>}
       {investigating && <div className="progress-line"><i /><span>Querying FalkorDB for modeled access paths…</span></div>}
@@ -393,18 +470,25 @@ function Workspace({ initialScenarioId, onNavigate }) {
       {investigation && <>
         <section className={`investigation-heading panel outcome-${investigation.outcome}`}>
           <div className="finding-summary"><OutcomeBadge outcome={investigation.outcome} /><p>{investigation.summary}</p><div className="finding-caveats"><span>Synthetic FalkorDB data</span><span>Potential reachability is not proof of exploitation</span></div></div>
-          <div className="risk-summary">{investigation.risk_assessment ? <><span>DEMO RULES · {investigation.risk_assessment.rule_version}</span><b>{investigation.risk_assessment.score}<small>/100</small></b><strong>{investigation.risk_assessment.severity}</strong></> : <><span>DETERMINISTIC RISK</span><b>Not assessed</b></>}</div>
+          <div className="risk-summary">{investigation.risk_assessment ? <><span>{responseRun ? "POST-ACTION · DEMO RULES" : `DEMO RULES · ${investigation.risk_assessment.rule_version}`}</span><b>{investigation.risk_assessment.score}<small>/100</small></b><strong>{investigation.risk_assessment.severity}</strong></> : responseRun ? <><span>POST-ACTION RISK</span><b>Not re-scored</b></> : <><span>DETERMINISTIC RISK</span><b>Not assessed</b></>}</div>
           {investigation.risk_assessment?.factors?.length > 0 && <div className="risk-factors"><strong>Why it matters</strong><ul>{investigation.risk_assessment.factors.map((factor) => <li key={factor}>{factor}</li>)}</ul><small>Demonstration scoring only; not calibrated breach probability.</small></div>}
         </section>
 
         <div className="primary-grid">
           <section className="graph-panel panel" aria-label="Graph path evidence">
-            <div className="panel-header"><div><p className="eyebrow">Graph evidence</p><h3>Modeled access topology</h3><p className="panel-description">Actual nodes and relationships returned for this investigation.</p></div><span className="path-count">{paths.length} {paths.length === 1 ? "path" : "paths"}</span></div>
-            {paths.length > 0 ? <>
-            {nodeTypes.length > 0 && <div className="graph-legend" aria-label="Entity types in this graph">{nodeTypes.map((type) => <span key={type}><i className={`legend-swatch ${(type || "entity").toLowerCase()}`} aria-hidden="true" />{type}</span>)}</div>}
-            <div className="graph-scroll"><div className="graph-canvas"><ReactFlow key={`${investigation.alert_id}-${investigation.investigation_id}`} nodes={nodes} edges={edges} fitView fitViewOptions={{ padding: 0.18, minZoom: 0.25, maxZoom: 1.15 }} nodesDraggable={false} nodesConnectable={false} proOptions={{ hideAttribution: true }}><Background color="#24415b" gap={24} /><Controls showInteractive={false} /></ReactFlow></div></div>
-              <div className="path-index" aria-label="All returned paths"><h4>Path sequence</h4>{paths.map((path, index) => <div key={`path-${index}`}><b>Path {String(index + 1).padStart(2, "0")}</b><span className="path-chain">{path.nodes.map((node, nodeIndex) => <span className="path-step" key={`${node.id}-${nodeIndex}`}><code>{node.id}</code>{path.edges[nodeIndex] && <em>{path.edges[nodeIndex].type.replaceAll("_", " ")}</em>}</span>)}</span></div>)}</div>
-            </> : <div className={`graph-empty ${investigation.outcome}`}><strong>{investigation.outcome === "query_error" ? "Graph evidence could not be loaded" : investigation.outcome === "unknown_entity" ? "The target is not present in this graph" : investigation.outcome === "invalid_input" ? "The target input is invalid" : "No qualifying path was returned"}</strong><p>{investigation.outcome === "query_error" ? "No reachability conclusion can be drawn." : "This result describes the modeled query only; missing paths do not establish that a real environment is safe."}</p></div>}
+            <div className="panel-header graph-panel-heading"><div><p className="eyebrow">Graph evidence</p><h3>Modeled access topology</h3><p className="panel-description">Actual nodes and relationships returned by the canonical investigation.</p></div>
+              {hasBeforeAfter && <div className="graph-view-switch" role="group" aria-label="Graph evidence view">
+                {["before", "after", "compare"].map((view) => <button key={view} type="button" className={graphView === view ? "selected" : ""} aria-pressed={graphView === view} disabled={(view !== "after" && !preActionSnapshot?.investigation?.paths?.length) || (view !== "before" && !responseRun)} onClick={() => setGraphView(view)}>{view === "before" ? "Before response" : view === "after" ? "After response" : "Compare"}</button>)}
+              </div>}
+            </div>
+            {graphView === "compare" && hasBeforeAfter ? <>
+              <p className="comparison-caveat"><strong>Historical topology is shown for context only.</strong> Current reachability is determined by the fresh after-response query and current route statuses—not by the historical graph.</p>
+              <div className="graph-comparison">
+                <GraphEvidenceView title="BEFORE RESPONSE — HISTORICAL SNAPSHOT" investigation={preActionSnapshot.investigation} paths={preActionSnapshot.investigation?.paths || []} historical initialRoutes={preActionSnapshot.route_statuses} actions={responseHistory} graphKey={preActionSnapshot.snapshot_id} />
+                <GraphEvidenceView title="AFTER RESPONSE — FRESH GRAPH QUERY" investigation={investigation} paths={paths} currentRoutes={displayedRouteStatuses} graphKey={investigation.investigation_id} />
+              </div>
+            </> : graphView === "before" && hasBeforeAfter ? <GraphEvidenceView title="BEFORE RESPONSE — HISTORICAL SNAPSHOT" investigation={preActionSnapshot.investigation} paths={preActionSnapshot.investigation?.paths || []} historical initialRoutes={preActionSnapshot.route_statuses} actions={responseHistory} graphKey={preActionSnapshot.snapshot_id} />
+              : <GraphEvidenceView title={responseRun ? "AFTER RESPONSE — FRESH GRAPH QUERY" : "CURRENT GRAPH — FRESH INVESTIGATION"} investigation={investigation} paths={paths} currentRoutes={displayedRouteStatuses} graphKey={investigation.investigation_id} />}
           </section>
 
           <aside className="side-rail">
@@ -412,14 +496,14 @@ function Workspace({ initialScenarioId, onNavigate }) {
               <p className="panel-description">{agent?.grounding?.status === "grounded" ? "Gemini answer passed checks against the canonical evidence." : agent?.grounding?.status === "fallback" ? agent.grounding.reason?.startsWith("gemini_") ? "Gemini was unavailable or its request failed; this is a deterministic canonical summary." : "The Gemini answer did not pass grounding checks; this is a deterministic canonical summary." : "Optional explanation of the structured graph result."}</p>
               {agentLoading && <p className="subtle" role="status">Gemini is reviewing the structured evidence…</p>}
               {agent?.stale && <div className="stale-message"><strong>Previous briefing is stale</strong><p>The graph changed after this briefing. Generate a new explanation for the current route state.</p><button className="text-button" onClick={refreshAgentBriefing} disabled={agentLoading}>Refresh briefing</button></div>}
-              {agent?.answer && !agent.stale && <div className="markdown-answer"><ReactMarkdown>{agent.answer}</ReactMarkdown></div>}
+              {agent?.answer && !agent.stale && <div className="markdown-answer"><ReactMarkdown>{normalizeBriefingArrows(agent.answer)}</ReactMarkdown></div>}
               {agentError && <p className="agent-error" role="alert">AI briefing unavailable: {agentError} The structured graph result remains available.</p>}
               {!agentLoading && !agentError && !agent?.answer && !agent?.stale && <p className="subtle">The AI explanation is optional; the graph investigation remains available independently.</p>}
               {agent?.grounding?.status === "fallback" && <small className="fallback-note">{agent.grounding.reason?.startsWith("gemini_") ? "Gemini unavailable or failed — canonical summary shown." : "Gemini answer not accepted — canonical summary shown."}</small>}
               {agent?.grounding?.status === "fallback" && <details className="grounding-debug"><summary>Grounding diagnostic</summary><p>Reason: {agent.grounding.reason || "not supplied"}</p>{agent.grounding.diagnostic_code && <p>Diagnostic: {agent.grounding.diagnostic_code}</p>}{agent.grounding.unsupported_entities?.length > 0 && <p>Unsupported entity claims: {agent.grounding.unsupported_entities.join(", ")}</p>}{agent.grounding.unsupported_relationships?.length > 0 && <p>Unsupported relationship claims: {agent.grounding.unsupported_relationships.join(", ")}</p>}{agent.grounding.claimed_scores?.length > 0 && <p>Rejected score claims: {agent.grounding.claimed_scores.join(", ")}</p>}</details>}
             </section>
 
-            {selectedAlert.id === "BH-CONTAINMENT-4001" && <ContainmentLab containment={containment} history={history} paths={containment?.before?.paths || paths} target={investigation.target} busy={containmentBusy} onSimulate={simulateRoute} />}
+            {selectedAlert.id === "BH-CONTAINMENT-4001" && <ContainmentLab containment={containment} history={history} paths={containment?.before?.paths || paths} target={investigation.target} busy={containmentBusy || responseBusy} onSimulate={simulateRoute} />}
           </aside>
         </div>
 
@@ -438,6 +522,151 @@ function Workspace({ initialScenarioId, onNavigate }) {
       <TraversalLab graphAvailable={databaseOnline} />
     </main>
   </div>;
+}
+
+function routeStatusFor(routeId, routes = []) {
+  return routes.find((route) => route.route_id === routeId)?.containment_status || null;
+}
+
+function GraphEvidenceView({ title, investigation, paths, historical = false, initialRoutes = [], currentRoutes = [], actions = [], graphKey }) {
+  const outcome = investigation?.outcome || "query_error";
+  const emptyTitle = outcome === "query_error" ? "Fresh graph evidence could not be loaded" : outcome === "unknown_entity" ? "The target is not present in this graph" : outcome === "invalid_input" ? "The target input is invalid" : "No qualifying path in the modeled graph";
+  return <div className={`graph-evidence-block ${historical ? "historical" : "current"}`}>
+    <div className="graph-evidence-title"><strong>{title}</strong><span className="path-count">{paths.length} {paths.length === 1 ? "path" : "paths"}</span></div>
+    {historical && <p className="historical-warning">Historical evidence only · these paths are not asserted to be currently reachable.</p>}
+    {paths.length ? <>
+      <GraphTopology paths={paths} graphKey={graphKey} historical={historical} initialRoutes={initialRoutes} currentRoutes={currentRoutes} actions={actions} />
+      <div className="path-index" aria-label={`${historical ? "Historical" : "Current"} path sequence`}><h5>{historical ? "Original path sequence" : "Current path sequence"}</h5>{paths.map((path, index) => <div key={`${path.nodes[0]?.id}-${index}`}><b>Path {String(index + 1).padStart(2, "0")}</b><span className="path-chain">{path.nodes.map((node, nodeIndex) => <span className="path-step" key={`${node.id}-${nodeIndex}`}><code>{node.id}</code>{path.edges[nodeIndex] && <em>{path.edges[nodeIndex].type.replaceAll("_", " ")}</em>}</span>)}</span></div>)}</div>
+    </> : <div className={`graph-empty ${outcome}`}><strong>{emptyTitle}</strong><p>{outcome === "query_error" ? "No reachability conclusion can be drawn because this query failed." : "The fresh query returned no qualifying active path. This does not establish real-world safety."}</p></div>}
+  </div>;
+}
+
+function GraphTopology({ paths, graphKey, historical, initialRoutes, currentRoutes, actions }) {
+  const nodes = useMemo(() => {
+    const orderedPaths = [...paths].sort((left, right) => {
+      const routeId = (path) => path.edges.find((edge) => edge.type === "HAS_SESSION")?.properties?.route_id || "";
+      return routeId(left).localeCompare(routeId(right));
+    });
+    const nodeById = new Map();
+    orderedPaths.forEach((path, pathIndex) => {
+      const lane = (pathIndex - (orderedPaths.length - 1) / 2) * 230;
+      path.nodes.forEach((node, depth) => {
+        const entry = nodeById.get(node.id) || { node, rank: depth, laneValues: [] };
+        entry.rank = Math.max(entry.rank, depth);
+        entry.laneValues.push(lane);
+        nodeById.set(node.id, entry);
+      });
+    });
+    const rankedNodes = [...nodeById.values()].sort((a, b) => a.rank - b.rank || a.laneValues.reduce((sum, value) => sum + value, 0) - b.laneValues.reduce((sum, value) => sum + value, 0));
+    const rankOffsets = new Map();
+    const positioned = rankedNodes.map(({ node, rank, laneValues }) => {
+      const lane = laneValues.reduce((sum, value) => sum + value, 0) / laneValues.length;
+      const peer = rankOffsets.get(rank) || 0;
+      rankOffsets.set(rank, peer + 1);
+      return { id: node.id, position: { x: 96 + rank * 360, y: lane + peer * 40 }, ariaLabel: `${node.label}, ${node.type}, ID ${node.id}`, data: { label: <><b>{node.label}</b><small>{node.type} · {node.id}</small></> }, className: `graph-node ${(node.type || "entity").toLowerCase()}` };
+    });
+    const minY = Math.min(0, ...positioned.map((node) => node.position.y));
+    return positioned.map((node) => ({ ...node, position: { ...node.position, y: node.position.y - minY + 72 } }));
+  }, [paths]);
+  const edges = useMemo(() => paths.flatMap((path, pathIndex) => path.edges.map((edge, edgeIndex) => {
+    const routeId = edge.type === "HAS_SESSION" ? edge.properties?.route_id : null;
+    const actionEvidence = actions.find((item) => {
+      const action = item.action || {};
+      const decision = item.decision || {};
+      const type = action.action_type || decision.action_type;
+      if (type === "BLOCK_CONTAINMENT_ROUTE") return edge.type === "HAS_SESSION" && (action.route_id || action.target_id || decision.target_id) === routeId && action.after_state === "BLOCKED";
+      if (type === "BLOCK_SESSION") return edge.type === "HAS_SESSION" && action.source_id === edge.source && action.target_id === edge.target && action.after_state === "BLOCKED";
+      if (type === "BLOCK_EXCESSIVE_ASSUMPTION") return edge.type === "CAN_ASSUME" && action.source_id === edge.source && action.target_id === edge.target && action.after_state === "BLOCKED";
+      if (type === "ISOLATE_WORKLOAD") return edge.type === "RUNS_AS" && action.target_id === edge.source && action.after_state === "ISOLATED";
+      return false;
+    });
+    const actionProvesBlocked = Boolean(actionEvidence);
+    const actionState = actionEvidence?.action?.after_state === "ISOLATED" ? "ISOLATED · SIMULATED" : "BLOCKED · SIMULATED";
+    const status = historical
+      ? actionProvesBlocked ? actionState : (routeStatusFor(routeId, initialRoutes) || edge.properties?.containment_status) === "ACTIVE" ? "ACTIVE BEFORE RESPONSE" : routeStatusFor(routeId, initialRoutes) || edge.properties?.containment_status || "HISTORICAL STATE"
+      : routeStatusFor(routeId, currentRoutes) || edge.properties?.containment_status || "CURRENT STATE UNAVAILABLE";
+    const label = actionProvesBlocked || routeId ? `${edge.type.replaceAll("_", " ")} · ${status}` : edge.type.replaceAll("_", " ");
+    return {
+      id: `${pathIndex}-${edgeIndex}-${edge.source}-${edge.target}`, source: edge.source, target: edge.target,
+      label, type: "smoothstep", markerEnd: { type: MarkerType.ArrowClosed, color: actionProvesBlocked ? "#73818a" : "#7f95bd" },
+      style: actionProvesBlocked ? { stroke: "#73818a", strokeDasharray: "8 6" } : undefined,
+      labelBgStyle: { fill: historical && actionProvesBlocked ? "#26333c" : "#0b1a28", fillOpacity: 0.98 }, labelBgPadding: [7, 4], labelBgBorderRadius: 5,
+      labelStyle: { fill: historical && actionProvesBlocked ? "#d0d8dc" : "#e1edf5", fontSize: 11, fontWeight: 700 },
+      ariaLabel: `${edge.source} ${edge.type} ${edge.target}${routeId ? ` ${status}` : ""}`,
+    };
+  })), [paths, historical, initialRoutes, currentRoutes, actions]);
+  const canvasStyle = useMemo(() => {
+    const maxX = Math.max(0, ...nodes.map((node) => node.position.x));
+    const maxY = Math.max(0, ...nodes.map((node) => node.position.y));
+    return { minWidth: `${Math.max(640, maxX + 330)}px`, minHeight: `${Math.max(390, maxY + 140)}px` };
+  }, [nodes]);
+  const entityTypes = [...new Set(paths.flatMap((path) => path.nodes.map((node) => node.type).filter(Boolean)))];
+  const routeLanes = [...new Map(paths.flatMap((path) => path.edges.filter((edge) => edge.type === "HAS_SESSION" && edge.properties?.route_id).map((edge) => {
+    const routeId = edge.properties.route_id;
+    const action = actions.find((item) => {
+      const runAction = item.action || {};
+      const choice = item.decision || {};
+      return (runAction.action_type || choice.action_type) === "BLOCK_CONTAINMENT_ROUTE"
+        && (runAction.route_id || runAction.target_id || choice.target_id) === routeId
+        && runAction.after_state === "BLOCKED";
+    });
+    const status = historical
+      ? action ? "BLOCKED · SIMULATED" : (routeStatusFor(routeId, initialRoutes) || edge.properties?.containment_status) === "ACTIVE" ? "ACTIVE BEFORE RESPONSE" : routeStatusFor(routeId, initialRoutes) || edge.properties?.containment_status || "HISTORICAL STATE"
+      : routeStatusFor(routeId, currentRoutes) || "CURRENT STATE UNAVAILABLE";
+    return [routeId, { routeId, status, blocked: Boolean(action) }];
+  }))).values()];
+  return <>
+    <div className="graph-legend" aria-label="Entity types in this graph">{entityTypes.map((type) => <span key={type}><i className={`legend-swatch ${(type || "entity").toLowerCase()}`} aria-hidden="true" />{type}</span>)}{routeLanes.map((route) => <span className={`route-state-legend ${route.blocked ? "simulated-block" : ""}`} key={route.routeId}><i />{route.routeId} · {route.status}</span>)}</div>
+    <div className={`graph-scroll ${historical ? "historical-graph" : ""}`}><div className="graph-canvas" style={canvasStyle}><ReactFlow key={`${graphKey}-${historical ? "history" : "current"}`} nodes={nodes} edges={edges} fitView fitViewOptions={{ padding: 0.12, minZoom: 0.55, maxZoom: 1.15 }} nodesDraggable={false} nodesConnectable={false} proOptions={{ hideAttribution: true }}><Background color="#24415b" gap={24} /><Controls showInteractive={false} /></ReactFlow></div></div>
+  </>;
+}
+
+function AutonomousResponsePanel({ alert, investigation, result, snapshot, currentRoutes, busy, confirmOpen, error, onRequestConfirm, onCancel, onConfirm }) {
+  if (investigation.outcome !== "path_found" && !result) return null;
+  const actions = result?.actions || [];
+  const initialRisk = snapshot?.investigation?.risk_assessment || result?.initial_risk;
+  const afterRisk = result?.final_investigation?.risk_assessment || result?.final_risk;
+  const finalInvestigation = result?.final_investigation;
+  const finalPathCount = finalInvestigation?.paths?.length;
+  return <section className="response-panel panel" aria-labelledby="response-title">
+    <div className="panel-header"><div><p className="eyebrow">Confirmed · synthetic graph only</p><h3 id="response-title">Autonomous response simulation</h3></div><span className="response-limit">MAX 3 ACTIONS</span></div>
+    <p className="panel-description">Gemini selects from currently verified, typed candidates. Each action is re-validated, applied only to synthetic FalkorDB state, and followed by a fresh investigation.</p>
+    {!confirmOpen && !busy && investigation.outcome === "path_found" && <button className="response-button" type="button" disabled={!investigation.paths.length} onClick={onRequestConfirm}>{result ? "Confirm another response run" : "Review and confirm response run"}</button>}
+    {confirmOpen && <div className="response-confirm" role="group" aria-label="Confirm synthetic response run"><strong>Before you continue</strong><p>This may change up to three properties in the local synthetic graph for <code>{alert.id}</code>. It cannot remediate a real cloud account. Continue once to authorize the bounded run.</p><div><button className="response-confirm-button" type="button" onClick={onConfirm}>Confirm and run (up to 3 actions)</button><button className="text-button" type="button" onClick={onCancel}>Cancel</button></div></div>}
+    {busy && <p className="response-progress" role="status"><i /> Gemini is choosing a verified action; graph state will be re-checked after each step…</p>}
+    {error && <p className="agent-error" role="alert">{error}</p>}
+    {result && <div className="response-run-result">
+      <div className="response-run-heading"><strong>{result.status === "completed" ? "Run finished" : "Run stopped safely"}</strong><span>{result.run_id} · {result.duration_ms ?? 0} ms</span></div>
+      <div className="response-risk-pair"><span>Pre-action risk <b>{initialRisk ? `${initialRisk.score}/100 · ${initialRisk.severity}` : "Not assessed before action"}</b></span><span>Post-action risk <b>{afterRisk ? `${afterRisk.score}/100 · ${afterRisk.severity}` : "Not re-scored"}</b></span></div>
+      {actions.length ? <section className="action-timeline" aria-label="Ordered response action timeline"><h4>Action timeline</h4><ol>{actions.map((item, index) => {
+        const action = item.action || {};
+        const decision = item.decision || {};
+        const verification = item.verification || {};
+        const actionApplied = Boolean(action.after_state);
+        const verificationPassed = item.status === "verified" && verification.target_action_absent === true;
+        const actionLabel = verificationPassed ? "VERIFIED BY FRESH QUERY" : actionApplied ? "ACTION APPLIED · VERIFICATION FAILED" : "ACTION NOT APPLIED";
+        const actionTone = verificationPassed ? "verified" : actionApplied ? "failed-verification" : "not-applied";
+        const actionType = action.action_type || decision.action_type || "Response action";
+        const targetId = action.target_id || decision.target_id || "Target unavailable";
+        const postOutcome = verification.fresh_investigation_outcome || item.after?.outcome || "not returned";
+        const remaining = item.after?.paths?.length;
+        return <li className="action-timeline-item" key={action.run_action_id || `${decision.action_id || "action"}-${index}`}>
+          <span className="timeline-index">{String(index + 1).padStart(2, "0")}</span>
+          <div className="timeline-content"><div className="timeline-heading"><strong>{actionType.replaceAll("_", " ")}</strong><span className={`timeline-result ${actionTone}`}>{actionLabel}</span></div>
+            <p><code>{targetId}</code>{action.run_action_id && <small> · {action.run_action_id}</small>}</p>
+            <small className="timeline-rationale">{decision.rationale || action.reason || "No rationale was returned."}</small>
+            <div className="timeline-facts"><span>State: <b>{action.before_state || "Not returned"} → {action.after_state || "Not applied"}</b></span><span>Fresh query: <b>{postOutcome.replaceAll("_", " ")}</b>{remaining !== undefined && ` · ${remaining} remaining path(s)`}</span></div>
+          </div>
+        </li>;
+      })}</ol></section> : <p className="subtle">No response action was taken. Outcome: {result.final_outcome || "not reported"}.</p>}
+      {finalInvestigation && <div className={`final-verification ${finalInvestigation.outcome === "no_path_in_graph" ? "no-path" : ""}`}><strong>Final fresh investigation</strong><span>{finalInvestigation.summary}</span><b>{finalPathCount ?? "—"} qualifying path(s) · {finalInvestigation.outcome?.replaceAll("_", " ")}</b><small>{result.final_outcome === "no_qualifying_path" ? "The modeled query returned no qualifying path; this is not a real-world safety guarantee." : `Run stop reason: ${result.final_outcome || "not returned"}.`}</small></div>}
+      {currentRoutes.length > 0 && <div className="response-route-statuses"><h4>Current route statuses · fresh status response</h4><ul>{currentRoutes.map((route) => <li key={route.route_id}><code>{route.route_id}</code><span className={`route-state ${String(route.containment_status).toLowerCase()}`}>{route.containment_status}</span></li>)}</ul></div>}
+      {!currentRoutes.length && alert.scenario === "containment_verification" && <p className="empty-detail">Current route statuses were not returned; no status is inferred from the historical graph.</p>}
+      <p className="response-outcome">Final outcome: <code>{result.final_outcome || result.status}</code></p>
+      <details><summary>Decision and action tool trace <span>{result.tool_trace?.length || 0} events</span></summary><div className="disclosure-content">{(result.tool_trace || []).map((trace, index) => <div className="response-trace" key={`${trace.tool_name}-${index}`}><strong>{trace.tool_name}</strong><span>{trace.phase} · {trace.result} · {trace.duration_ms} ms</span><code>{JSON.stringify(trace.input || {})}</code></div>)}</div></details>
+      <small className="response-disclaimer">{(result.warnings || []).join(" ")}</small>
+    </div>}
+  </section>;
 }
 
 const SCENARIO_DESCRIPTIONS = {
