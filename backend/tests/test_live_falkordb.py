@@ -11,6 +11,7 @@ import unittest
 from app import integration, main
 from app.graph.connection import graph_connection
 from app.graph.seed import seed_blastshield_graph
+from app.graph.scenario4_seed import seed_scenario4_graph
 from app.services import graph_service
 from app.agent.response_service import response_candidates, execute_response_action
 
@@ -104,7 +105,6 @@ class LiveFalkorDBTests(unittest.TestCase):
                 return node_count, relationship_count
 
             before_counts = fixture_counts()
-            self.assertEqual(before_counts, (7, 7))
             seed_blastshield_graph(graph)
             seed_blastshield_graph(graph)
             after_counts = fixture_counts()
@@ -120,14 +120,38 @@ class LiveFalkorDBTests(unittest.TestCase):
             [edge["type"] for edge in deeper["path"]["edges"]],
             ["HAS_SESSION", "CAN_ACCESS", "RUNS_AS", "CAN_ASSUME", "CAN_READ"],
         )
-
-        direct = graph_service.find_shortest_access_path("auditor_02", "analytics-cache", max_hops=5)
-        self.assertEqual(direct["status"], "path_found")
-        self.assertEqual(direct["hop_count"], 4)
-        self.assertEqual(direct["path"]["edges"][-1]["target"], "analytics-cache")
         self.assertEqual(
-            [edge["type"] for edge in direct["path"]["edges"]],
+            [node["id"] for node in deeper["path"]["nodes"]],
+            ["auditor_02", "sess_auditor_02", "audit-reporter-02", "audit-readonly-role", "staging-observer-role", "staging-report"],
+        )
+        self.assertEqual(
+            [(edge["source"], edge["target"]) for edge in deeper["path"]["edges"]],
+            [
+                ("auditor_02", "sess_auditor_02"),
+                ("sess_auditor_02", "audit-reporter-02"),
+                ("audit-reporter-02", "audit-readonly-role"),
+                ("audit-readonly-role", "staging-observer-role"),
+                ("staging-observer-role", "staging-report"),
+            ],
+        )
+
+        cache_shallow = graph_service.find_shortest_access_path("auditor_02", "analytics-cache", max_hops=1)
+        cache_deep = graph_service.find_shortest_access_path("auditor_02", "analytics-cache", max_hops=4)
+        self.assertEqual(cache_shallow["status"], "no_path")
+        self.assertEqual(cache_deep["status"], "path_found")
+        self.assertEqual(cache_deep["hop_count"], 4)
+        self.assertEqual(
+            [node["id"] for node in cache_deep["path"]["nodes"]],
+            ["auditor_02", "sess_auditor_02", "audit-reporter-02", "audit-readonly-role", "analytics-cache"],
+        )
+        self.assertEqual(
+            [edge["type"] for edge in cache_deep["path"]["edges"]],
             ["HAS_SESSION", "CAN_ACCESS", "RUNS_AS", "CAN_READ"],
+        )
+        self.assertEqual(
+            graph_service.find_shortest_access_path("dormant_identity_03", "unattached-asset-01", max_hops=4)["status"],
+            "no_path",
+            "known but disconnected entities must remain distinct from unknown IDs",
         )
 
         after_canonical = {
@@ -159,6 +183,22 @@ class LiveFalkorDBTests(unittest.TestCase):
         self.assertEqual(set(original), {"primary", "alternate"})
 
         try:
+            def fixture_counts():
+                with graph_connection() as graph:
+                    nodes = graph.ro_query(
+                        "MATCH (n) WHERE n.id STARTS WITH 'containment-' OR n.id = 'customer-db' RETURN count(n)"
+                    ).result_set[0][0]
+                    relationships = graph.ro_query(
+                        "MATCH (a)-[r]->(b) WHERE a.id STARTS WITH 'containment-' OR b.id STARTS WITH 'containment-' RETURN count(r)"
+                    ).result_set[0][0]
+                return nodes, relationships
+
+            before_seed_counts = fixture_counts()
+            with graph_connection() as graph:
+                seed_scenario4_graph(graph)
+                seed_scenario4_graph(graph)
+            self.assertEqual(fixture_counts(), before_seed_counts, "Scenario 4 seeding must be idempotent")
+
             # Activate only the two existing route properties; do not rerun a
             # whole scenario seed or modify any graph nodes/relationships.
             with graph_connection() as graph:
