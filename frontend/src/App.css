@@ -177,6 +177,9 @@ main { display: grid; gap: 22px; min-width: 0; }
 .traversal-sequence strong { color: var(--text); font-size: 14px; overflow-wrap: anywhere; }
 .traversal-sequence small { color: var(--muted); font: 11px/1.4 ui-monospace, SFMono-Regular, Consolas, monospace; overflow-wrap: anywhere; }
 .traversal-sequence span { color: var(--cyan); font-size: 12px; font-weight: 700; }
+.traversal-edge { display: grid; gap: 3px; margin-top: 4px; padding-top: 7px; border-top: 1px solid var(--border); }
+.traversal-edge span { color: var(--cyan); font: 11px/1.45 ui-monospace, SFMono-Regular, Consolas, monospace; overflow-wrap: anywhere; }
+.traversal-edge small { font-size: 10px; }
 .traversal-disclaimer { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.5; }
 .react-flow__edge-path { stroke: #9ab3c5; stroke-width: 2; }
 .react-flow__edge-text { fill: #e1edf5; font-size: 12px; font-weight: 700; }
@@ -257,6 +260,7 @@ main { display: grid; gap: 22px; min-width: 0; }
 .timeline-result.failed-verification { color: #ffbdc3; }
 .timeline-content > p { margin: 6px 0; color: var(--cyan); font: 12px ui-monospace, SFMono-Regular, Consolas, monospace; overflow-wrap: anywhere; }
 .timeline-content > p small { color: var(--muted); font-size: 10px; }
+.timeline-timestamp { display: block; color: var(--muted); font: 10px/1.4 ui-monospace, SFMono-Regular, Consolas, monospace; overflow-wrap: anywhere; }
 .timeline-rationale { display: block; color: var(--text-soft); font-size: 11px; line-height: 1.45; }
 .timeline-facts { display: grid; gap: 5px; margin-top: 8px; padding-top: 7px; border-top: 1px solid var(--border); }
 .timeline-facts span { color: var(--muted); font-size: 10px; line-height: 1.45; overflow-wrap: anywhere; }

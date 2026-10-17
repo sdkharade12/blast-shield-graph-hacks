@@ -95,11 +95,17 @@ async def run_autonomous_response(alert_id: str, max_actions: int = 3) -> dict[s
     warnings = ["Synthetic FalkorDB only. No real cloud resource, identity, or session is changed.", "Risk scores are deterministic demo rules, not breach probabilities."]
     stop_reason = "action_limit_reached"
     for index in range(max_actions):
-        if not current or current.outcome == "query_error":
+        if not current:
             stop_reason = "graph_query_error"
             break
-        if current.outcome != "path_found":
+        if current.outcome == "query_error":
+            stop_reason = "graph_query_error"
+            break
+        if current.outcome == "no_path_in_graph":
             stop_reason = "no_qualifying_path"
+            break
+        if current.outcome != "path_found":
+            stop_reason = current.outcome
             break
         choice, decision_trace, error = await _ask_for_one_action(alert_id, current.model_dump(mode="json"), 45)
         tool_trace.extend({**item, "phase": "decision", "step": index + 1} for item in decision_trace)
@@ -121,18 +127,29 @@ async def run_autonomous_response(alert_id: str, max_actions: int = 3) -> dict[s
                 current = InvestigationResponse.model_validate(result["after"])
             except Exception:
                 current = investigate_alert(alert_id)
+        else:
+            # The response tool normally returns its post-action investigation.
+            # If that evidence is missing, do not reuse the previous snapshot:
+            # fetch current graph state before deciding whether another action
+            # is needed.
+            current = investigate_alert(alert_id)
         actions.append({"sequence": index + 1, "decision": choice, **result})
         if result.get("status") != "verified":
             stop_reason = result.get("status", "verification_failed")
             break
-        if current and current.outcome != "path_found":
+        if current and current.outcome in {"no_path_in_graph", "no_path"}:
             stop_reason = "no_qualifying_path"
+            break
+        if current and current.outcome != "path_found":
+            stop_reason = current.outcome
             break
     else:
         stop_reason = "action_limit_reached"
 
     final = current.model_dump(mode="json") if current else None
-    status = "completed" if stop_reason in {"no_qualifying_path", "action_limit_reached"} and all(item.get("status") == "verified" for item in actions) else "stopped"
+    # A capped run with paths remaining is stopped, not complete. This keeps
+    # run completion separate from verified removal of modeled reachability.
+    status = "completed" if stop_reason == "no_qualifying_path" and all(item.get("status") == "verified" for item in actions) else "stopped"
     if stop_reason.startswith("gemini_key"):
         warnings.append("Gemini is unavailable; no action was taken.")
     decision_provenance = (

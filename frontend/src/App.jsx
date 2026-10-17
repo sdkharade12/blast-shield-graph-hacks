@@ -654,6 +654,7 @@ function AutonomousResponsePanel({ alert, investigation, result, snapshot, curre
           <span className="timeline-index">{String(index + 1).padStart(2, "0")}</span>
           <div className="timeline-content"><div className="timeline-heading"><strong>{actionType.replaceAll("_", " ")}</strong><span className={`timeline-result ${actionTone}`}>{actionLabel}</span></div>
             <p><code>{targetId}</code>{action.run_action_id && <small> · {action.run_action_id}</small>}</p>
+            {action.timestamp && <time className="timeline-timestamp" dateTime={action.timestamp}>Action time · {action.timestamp}</time>}
             <small className="timeline-rationale">{decision.rationale || action.reason || "No rationale was returned."}</small>
             <div className="timeline-facts"><span>State: <b>{action.before_state || "Not returned"} → {action.after_state || "Not applied"}</b></span><span>Fresh query: <b>{postOutcome.replaceAll("_", " ")}</b>{remaining !== undefined && ` · ${remaining} remaining path(s)`}</span></div>
           </div>
@@ -739,7 +740,11 @@ function TraversalLab({ graphAvailable }) {
       <div><strong>{found ? `Path found · ${result.hop_count} ${result.hop_count === 1 ? "hop" : "hops"}` : result.status === "query_error" ? "Graph query failed" : result.status === "unknown_source" ? "Source entity not found" : result.status === "unknown_target" ? "Target entity not found" : "No qualifying path within selected depth"}</strong><span>Depth limit: {result.max_hops} · {result.data_source}</span></div>
       {result.message && <p>{result.message} This is not a safety guarantee.</p>}
       {result.error && <p>{result.error}</p>}
-      {found && <div className="traversal-sequence" aria-label="Returned path sequence">{result.path.nodes.map((node, index) => <div key={`${node.id}-${index}`}><strong>{node.label || node.id}</strong><small>{node.type} · {node.id}</small>{result.path.edges[index] && <span>{result.path.edges[index].type.replaceAll("_", " ")} →</span>}</div>)}</div>}
+      {found && <div className="traversal-sequence" aria-label="Returned path sequence">{result.path.nodes.map((node, index) => {
+        const edge = result.path.edges[index];
+        const properties = Object.entries(edge?.properties || {});
+        return <div key={`${node.id}-${index}`}><strong>{node.label || node.id}</strong><small>{node.type} · {node.id}</small>{edge && <section className="traversal-edge"><span>{edge.source} → {edge.target}</span><small>{edge.type.replaceAll("_", " ")}</small>{properties.length > 0 ? <small>Properties · {properties.map(([key, value]) => `${key}: ${JSON.stringify(value)}`).join(" · ")}</small> : <small>No relationship properties returned</small>}</section>}</div>;
+      })}</div>}
     </div>}
     <p className="traversal-disclaimer">A missing path means none was returned within this selected depth in the synthetic graph; it does not establish real-world safety.</p>
   </section>;

@@ -19,6 +19,18 @@ React investigation dashboard
 
 The structured investigation endpoint and optional Gemini investigation endpoint are separate. The graph service owns canonical outcomes and evidence; the read-only model can explain that evidence but cannot redefine it. If grounding checks fail or Gemini is unavailable, the agent path falls back to the canonical investigation summary. Autonomous response is a separate opt-in endpoint: it requires explicit confirmation, is bounded to at most three graph-derived actions, and gives Gemini no mutation tool. The controller validates each model choice, invokes a separate response-only MCP capability, and re-queries the graph after every action. Writes affect synthetic FalkorDB response state only. Health reports API and database status separately.
 
+## Track 01 evidence scorecard
+
+| Graph-agent principle | Current implementation | Evidence still required for a live submission demo |
+| --- | --- | --- |
+| Multi-hop graph reasoning | Canonical investigations and bounded graph traversal return ordered paths. | Show a depth-1 miss and depth-4 hit for `auditor_02` → `analytics-cache`; also show the four-to-five-hop change for `staging-report`. |
+| Fixed tools, not model-generated Cypher | MCP exposes a fixed catalogue of typed operations; Cypher is reviewed and parameterized by the backend. | Run unknown-entity and known-but-disconnected examples; show scenario-specific tool traces. |
+| Native graph algorithms as tools | **Not implemented.** `find_shortest_access_path` is bounded Cypher traversal, not `algo.SPpaths`. | The installed local image/version was not verified for the procedure; do not describe this traversal as native. |
+| Persistent graph memory | **Not implemented.** Findings and action history are not durable across API restarts; containment audit history is in-process only. | Optional future work, especially relevant to Track 02; keep fresh graph queries canonical if added later. |
+| Answers carry graph evidence | Structured results carry graph paths/evidence; response UI keeps a historical before snapshot, ordered actions, and a separate fresh after query. | Verify the complete flow in a live browser and show actual returned evidence, not a static illustration. |
+
+The graph is central to the investigation and response: paths, supported action candidates, and post-action verification all come from FalkorDB-backed queries. Removing FalkorDB removes the product's canonical security evidence and ability to verify its simulated response; the dashboard is not merely a visualization over ordinary records.
+
 ## Scenarios and seeded targets
 
 | Scenario | Alert | Target | What the graph query demonstrates |
@@ -69,10 +81,12 @@ The supplementary audit fixture demonstrates bounded traversal without becoming 
 
 ## Run locally
 
-The project can live at any path. The commands below follow the current Windows setup (`E:\Hackathon\blast-shield-graph`). Ensure the Docker container exposes port 6379 and install dependencies once before the demo.
+The project can live at any path. In the commands below, replace `C:\path\to\blast-shield-graph-hacks` with the directory containing this README. Ensure the Docker container exposes port 6379 and install dependencies once before the demo.
 
 ```powershell
 # One-time setup from the repository root
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
 python -m pip install -r requirements.txt
 cd frontend
 npm install
@@ -81,7 +95,7 @@ cd ..
 
 ```powershell
 # Terminal 1 — database, seeds, then API
-cd E:\Hackathon\blast-shield-graph
+Set-Location "C:\path\to\blast-shield-graph-hacks"
 .\.venv\Scripts\Activate.ps1
 docker start blastshield-db
 Test-NetConnection localhost -Port 6379
@@ -93,7 +107,7 @@ python -m uvicorn app.main:app --reload
 
 ```powershell
 # Terminal 2 — dashboard
-cd E:\Hackathon\blast-shield-graph\frontend
+Set-Location "C:\path\to\blast-shield-graph-hacks\frontend"
 npm run dev
 ```
 
@@ -106,10 +120,11 @@ To reset only the demo containment routes to `ACTIVE`, stop the API if needed an
 1. Open the identity case and investigate. Expand evidence to follow the access chain to critical data; point out the result outcome and deterministic risk factors.
 2. Switch to excessive IAM and public workload, then return to identity. Results are cached independently per case, so changing scenarios does not turn the earlier result blank or overwrite it.
 3. Show graph provenance, the bounded shortest-path result, and the MCP trace. The trace is measured tool activity, not a mock transcript.
-4. Use the **Traversal depth explorer** with source `auditor_02` and target `staging-report`: a four-hop limit returns no qualifying path; a five-hop limit returns the route through `CAN_ASSUME`. This is a bounded search result, not a safety guarantee.
-5. Open containment. The demo starts with both routes active after `scenario4_seed`: block `primary`, inspect the verified remaining alternate route, then block `alternate` and inspect the verified no-path result. The UI requires explicit confirmation.
-6. Rerun the scenario-4 seed after the demo if you want the next presentation to begin with both routes active.
-7. For the autonomous response demo, investigate a scenario with a returned path, choose **Review and confirm response run**, and confirm once. Show the decision trace and fresh post-action investigation. The run stops when no modeled path remains, Gemini cannot make a validated choice, verification fails, or the three-action limit is reached. Rerun `python -m app.graph.seed` to reset Scenarios 1–3 response properties and `python -m app.graph.scenario4_seed` to reset Scenario 4 routes.
+4. Use the **Traversal depth explorer** with source `auditor_02` and target `analytics-cache`: compare one hop (no qualifying path) with four hops (the returned path). Then compare four and five hops for `staging-report`, where the extra `CAN_ASSUME` relationship makes the modeled path discoverable. Show the exact nodes, directed edge types/properties, selected depth, and outcome.
+5. Enter a nonexistent entity ID to show `unknown_source` or `unknown_target`. Contrast it with the known but disconnected pair `dormant_identity_03` → `unattached-asset-01`, which returns `no_path`. These outcomes are distinct; neither means the real environment is safe.
+6. Open containment. The demo starts with both routes active after `scenario4_seed`: block `primary`, inspect the verified remaining alternate route, then block `alternate` and inspect the verified no-path result. Show the preserved historical before graph, each action ID/timestamp/state transition, and the separate fresh after result. The UI requires explicit confirmation.
+7. Rerun the scenario-4 seed after the demo if you want the next presentation to begin with both routes active.
+8. For the autonomous response demo, investigate a scenario with a returned path, choose **Review and confirm response run**, and confirm once. Show the decision trace and fresh post-action investigation. The run stops when no modeled path remains, Gemini cannot make a validated choice, verification fails, or the three-action limit is reached. Rerun `python -m app.graph.seed` to reset Scenarios 1–3 response properties and `python -m app.graph.scenario4_seed` to reset Scenario 4 routes.
 
 ## API endpoints
 
@@ -151,3 +166,7 @@ npm run build
 ## Boundaries
 
 This is a hackathon prototype over synthetic data. It is not connected to AWS, Azure, GCP, an identity provider, or production telemetry. It does not prove suspicious login activity, compromise, exploitability, or safety. Containment is a reversible demo mutation in FalkorDB only. Do not enter production secrets or use the tool as an authorization/remediation system. AI-generated explanations are optional and are checked against canonical graph evidence; all outputs should be reviewed by a human.
+
+## AI-assisted development disclosure
+
+OpenAI Codex was used as an AI coding assistant during development. The team remains responsible for reviewing, testing, understanding, and explaining the submitted implementation. Gemini is an optional runtime explanation/decision component; its output is constrained by the fixed MCP tools and canonical graph evidence, and fallback output is identified separately.
