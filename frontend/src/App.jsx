@@ -354,7 +354,11 @@ export default function App() {
 }
 
 function TraceRow({ trace, index }) {
-  return <div className="trace-row"><b>{String(index + 1).padStart(2, "0")}</b><div><strong>{trace.tool_name}</strong><code>{Object.entries(trace.input || {}).map(([key, value]) => `${key}: ${value}`).join(" · ")}</code><small>{(trace.evidence || []).join(", ") || "No entity IDs returned"}</small></div><span className={`trace-status ${trace.result}`}>{String(trace.result).replaceAll("_", " ")}</span><span>{trace.result_count} rows · {trace.duration_ms} ms</span></div>;
+  const routeStatuses = trace.route_statuses || [];
+  const evidence = routeStatuses.length
+    ? routeStatuses.map(({ route_id: routeId, containment_status: status }) => `${routeId}: ${status}`).join(" · ")
+    : (trace.evidence || []).join(", ") || "No entity IDs returned";
+  return <div className="trace-row"><b>{String(index + 1).padStart(2, "0")}</b><div><strong>{trace.tool_name}</strong><code>{Object.entries(trace.input || {}).map(([key, value]) => `${key}: ${value}`).join(" · ")}</code><small>{evidence}</small></div><span className={`trace-status ${trace.result}`}>{String(trace.result).replaceAll("_", " ")}</span><span>{trace.result_count} rows · {trace.duration_ms} ms</span></div>;
 }
 
 function ContainmentLab({ containment, history, busy, onSimulate }) {

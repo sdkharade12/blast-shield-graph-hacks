@@ -35,7 +35,34 @@ Core labels are `Identity`, `Session`, `Workload`, `IAMRole`, and `DataAsset`. I
 
 Canonical outcomes distinguish `path_found`, `no_path_in_graph`, `unknown_entity`, `invalid_input`, and `query_error`; an unknown alert is separately reported as `unknown_alert`. “No path” means no qualifying path was found by the modeled query, not proof of safety. A path is represented reachability, not proof of exploitation. The IAM scenario consumes the graph’s existing `EXCESSIVE` classification; it does not independently compute least privilege.
 
-`find_shortest_access_path` is a parameterized MCP tool. It accepts source and target IDs, traverses only the five relationship types above, excludes blocked session routes, caps traversal at six hops, and returns the ordered nodes, edges, and hop count. It does not accept caller-provided Cypher. Investigation traces record actual tool names, inputs, outcomes, durations, and result counts. The deterministic `demo-rules-v1` risk score is transparent demonstration logic, not calibrated breach probability.
+`find_shortest_access_path` is a parameterized MCP tool. It accepts source and target IDs, traverses only the five relationship types above, excludes blocked session routes, caps traversal at six hops, and returns the ordered nodes, edges, and hop count. It is a bounded Cypher traversal—not a FalkorDB native graph-algorithm procedure—and does not accept caller-provided Cypher. Investigation traces record actual tool names, inputs, outcomes, durations, and result counts. The deterministic `demo-rules-v1` risk score is transparent demonstration logic, not calibrated breach probability.
+
+## Reviewed query and MCP tool catalogue
+
+Read operations use reviewed, parameterized Cypher only; the model never writes or supplies Cypher. The shortest-path query is the bounded traversal described above:
+
+```cypher
+MATCH p = (source {id: $source_id})-[*1..6]->(target {id: $target_id})
+WHERE all(rel IN relationships(p) WHERE type(rel) IN
+  ['HAS_SESSION', 'CAN_ACCESS', 'RUNS_AS', 'CAN_ASSUME', 'CAN_READ']
+  AND (type(rel) <> 'HAS_SESSION' OR coalesce(rel.containment_status, 'ACTIVE') = 'ACTIVE'))
+RETURN
+  [node IN nodes(p) | {
+    id: node.id,
+    label: coalesce(node.name, node.id),
+    type: labels(node)[0]
+  }] AS nodes,
+  [rel IN relationships(p) | {
+    source: startNode(rel).id,
+    target: endNode(rel).id,
+    type: type(rel),
+    properties: properties(rel)
+  }] AS edges,
+  length(p) AS hop_count
+ORDER BY hop_count ASC LIMIT 1
+```
+
+The MCP catalogue is fixed: `investigate_alert(alert_id)` returns a canonical investigation; `get_blast_radius(alert_id)` returns path-derived workload/role/asset nodes; `find_shortest_access_path(source_id, target_id)` returns a bounded directed path or a distinct unknown/no-path/error state; and `get_containment_route_statuses(alert_id)` returns `{route_id, containment_status}` rows only for the containment scenario. Route-status traces render route IDs and states, not entity-ID placeholders.
 
 ## Run locally
 

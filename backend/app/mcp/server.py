@@ -38,6 +38,18 @@ def _traced(tool_function):
                     collect(child)
 
         collect(result)
+        route_statuses = []
+        if isinstance(result, dict) and isinstance(result.get("routes"), list):
+            route_statuses = [
+                {
+                    "route_id": str(route["route_id"]),
+                    "containment_status": str(route["containment_status"]),
+                }
+                for route in result["routes"]
+                if isinstance(route, dict)
+                and route.get("route_id") is not None
+                and route.get("containment_status") is not None
+            ]
         entry = {
             "tool_name": tool_function.__name__,
             "input": {key: str(value) for key, value in inputs.items()},
@@ -45,6 +57,9 @@ def _traced(tool_function):
             "duration_ms": round((perf_counter() - started) * 1000),
             "result_count": _result_count(result),
             "evidence": list(dict.fromkeys(entity_ids)),
+            # Route rows identify graph relationships rather than entities.
+            # Preserve their useful state for trace rendering.
+            "route_statuses": route_statuses,
         }
         TOOL_TRACE.append(entry)
         del TOOL_TRACE[:-30]

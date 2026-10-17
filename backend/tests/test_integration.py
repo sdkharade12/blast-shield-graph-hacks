@@ -118,6 +118,21 @@ class IntegrationTests(unittest.TestCase):
         self.assertEqual(result.outcome, "no_path_in_graph")
         self.assertEqual(result.paths, [])
 
+    def test_demo_rules_match_the_canonical_seeded_scenarios(self):
+        path = {"nodes": [], "edges": []}
+        cases = [
+            ("identity_investigation", [path], 35, "MEDIUM"),
+            ("excessive_iam_permissions", [path], 65, "HIGH"),
+            ("exposed_workload_blast_radius", [path, path, path], 75, "HIGH"),
+            ("containment_verification", [path, path], 60, "HIGH"),
+        ]
+        for scenario, paths, expected_score, expected_severity in cases:
+            with self.subTest(scenario=scenario):
+                assessment = integration._assess_risk(scenario, "path_found", paths)
+                self.assertEqual(assessment["score"], expected_score)
+                self.assertEqual(assessment["severity"], expected_severity)
+                self.assertEqual(assessment["rule_version"], "demo-rules-v1")
+
     def test_unknown_entity_and_query_error_remain_distinct(self):
         with patch.object(
             integration,
@@ -258,6 +273,29 @@ class IntegrationTests(unittest.TestCase):
         self.assertEqual(trace[0]["input"], {"alert_id": "BH-1042"})
         self.assertGreaterEqual(trace[0]["duration_ms"], 0)
 
+    def test_mcp_route_status_trace_preserves_route_states(self):
+        with patch.object(
+            mcp_server,
+            "get_containment_status",
+            return_value={
+                "status": "routes_found",
+                "routes": [
+                    {"route_id": "primary", "containment_status": "ACTIVE"},
+                    {"route_id": "alternate", "containment_status": "BLOCKED"},
+                ],
+            },
+        ):
+            mcp_server.get_containment_route_statuses("BH-CONTAINMENT-4001")
+        trace = mcp_server.get_tool_trace()["items"]
+        self.assertEqual(trace[0]["result_count"], 2)
+        self.assertEqual(
+            trace[0]["route_statuses"],
+            [
+                {"route_id": "primary", "containment_status": "ACTIVE"},
+                {"route_id": "alternate", "containment_status": "BLOCKED"},
+            ],
+        )
+
     def test_shortest_path_query_is_depth_and_relationship_bounded(self):
         self.assertIn("*1..6", FIND_SHORTEST_ACCESS_PATH_QUERY)
         for relationship in ("HAS_SESSION", "CAN_ACCESS", "RUNS_AS", "CAN_ASSUME", "CAN_READ"):
@@ -309,7 +347,7 @@ class IntegrationTests(unittest.TestCase):
             investigation_id="INV-BH-WORKLOAD-3001",
             alert_id="BH-WORKLOAD-3001",
             target={"type": "Workload", "id": "exposed-api-01"},
-            outcome="path_found", risk_score=65, severity="HIGH",
+            outcome="path_found", risk_score=75, severity="HIGH",
             summary="Path found.",
             paths=[{
                 "nodes": [
@@ -321,13 +359,33 @@ class IntegrationTests(unittest.TestCase):
                     {"source": "exposed-api-01", "target": "api-service-role", "type": "RUNS_AS"},
                     {"source": "api-service-role", "target": "customer-db", "type": "CAN_READ"},
                 ],
+            }, {
+                "nodes": [
+                    {"id": "exposed-api-01", "label": "API", "type": "Workload"},
+                    {"id": "api-service-role", "label": "Role", "type": "IAMRole"},
+                    {"id": "payments-db", "label": "Payments", "type": "DataAsset"},
+                ],
+                "edges": [
+                    {"source": "exposed-api-01", "target": "api-service-role", "type": "RUNS_AS"},
+                    {"source": "api-service-role", "target": "payments-db", "type": "CAN_READ"},
+                ],
+            }, {
+                "nodes": [
+                    {"id": "exposed-api-01", "label": "API", "type": "Workload"},
+                    {"id": "api-service-role", "label": "Role", "type": "IAMRole"},
+                    {"id": "config-store", "label": "Config", "type": "DataAsset"},
+                ],
+                "edges": [
+                    {"source": "exposed-api-01", "target": "api-service-role", "type": "RUNS_AS"},
+                    {"source": "api-service-role", "target": "config-store", "type": "CAN_READ"},
+                ],
             }], evidence=[], proposed_actions=[], warnings=[],
             provenance={"dataset_version": "blastshield-synthetic-v1"},
         )
         with patch.object(gemini_service, "investigate_alert", return_value=fake):
             accepted, accepted_check = gemini_service._ground_answer(
                 "Alert BH-WORKLOAD-3001 (INV-BH-WORKLOAD-3001) in blastshield-synthetic-v1: "
-                "the represented path uses RUNS_AS and CAN_READ. Risk score: 65/100.",
+                "the represented paths use RUNS_AS and CAN_READ. Risk score: 75/100.",
                 "BH-WORKLOAD-3001",
             )
             fallback, failed_check = gemini_service._ground_answer(
