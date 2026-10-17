@@ -15,9 +15,12 @@ from app.graph.queries import (
     FIND_REMAINING_CONTAINMENT_PATHS_QUERY,
     SIMULATE_CONTAINMENT_QUERY,
     GET_CONTAINMENT_ROUTE_STATUS_QUERY,
+    FIND_SHORTEST_ACCESS_PATH_QUERY,
 )
 
 logger = logging.getLogger(__name__)
+
+MAX_ACCESS_PATH_HOPS = 6
 
 
 # ============================================================
@@ -464,4 +467,79 @@ def get_containment_route_statuses(
             "identity_id": identity_id,
             "routes": [],
             "error": "Route status query failed. Check backend logs.",
+        }
+
+
+# ============================================================
+# BOUNDED SHORTEST ACCESS PATH (MCP TOOL)
+# ============================================================
+
+def find_shortest_access_path(source_id: str, target_id: str) -> dict[str, Any]:
+    """Return the shortest supported directed access path in the graph.
+
+    FalkorDB installations used during demos do not all expose the same graph
+    algorithm procedures. This fixed parameterized Cypher query is the
+    portable fallback: relationship types and depth are both bounded to six.
+    """
+    if not all(
+        isinstance(value, str) and value.strip() and len(value.strip()) <= 128
+        for value in (source_id, target_id)
+    ):
+        return {
+            "status": "invalid_input", "source_id": source_id, "target_id": target_id,
+            "path": None, "error": "Valid source and target entity IDs are required.",
+        }
+    source_id, target_id = source_id.strip(), target_id.strip()
+    try:
+        with graph_connection() as graph:
+            # A label-agnostic lookup is needed because source/target can be any supported entity.
+            source_rows = graph.ro_query(
+                "MATCH (n {id: $entity_id}) RETURN n.id AS id, coalesce(n.name, n.id) AS name, labels(n)[0] AS type LIMIT 1",
+                {"entity_id": source_id},
+            ).result_set
+            target_rows = graph.ro_query(
+                "MATCH (n {id: $entity_id}) RETURN n.id AS id, coalesce(n.name, n.id) AS name, labels(n)[0] AS type LIMIT 1",
+                {"entity_id": target_id},
+            ).result_set
+            if not source_rows:
+                return {
+                    "status": "unknown_source", "source_id": source_id, "target_id": target_id,
+                    "path": None, "hop_count": None, "error": None,
+                }
+            if not target_rows:
+                return {
+                    "status": "unknown_target", "source_id": source_id, "target_id": target_id,
+                    "path": None, "hop_count": None, "error": None,
+                }
+            if source_id == target_id:
+                source = source_rows[0]
+                return {
+                    "status": "path_found", "source_id": source_id, "target_id": target_id,
+                    "hop_count": 0,
+                    "path": {"nodes": [{"id": source[0], "label": source[1], "type": source[2]}], "edges": []},
+                    "error": None,
+                }
+            path_rows = graph.ro_query(
+                FIND_SHORTEST_ACCESS_PATH_QUERY,
+                {"source_id": source_id, "target_id": target_id},
+            ).result_set
+        if path_rows:
+            row = path_rows[0]
+            nodes = [dict(item) for item in row[0]]
+            edges = [dict(item) for item in row[1]]
+            for edge in edges:
+                edge["properties"] = dict(edge.get("properties") or {})
+            return {
+                "status": "path_found", "source_id": source_id, "target_id": target_id,
+                "hop_count": int(row[2]), "path": {"nodes": nodes, "edges": edges}, "error": None,
+            }
+        return {
+            "status": "no_path", "source_id": source_id, "target_id": target_id,
+            "path": None, "hop_count": None, "max_hops": MAX_ACCESS_PATH_HOPS, "error": None,
+        }
+    except Exception:
+        logger.exception("Shortest access-path query failed for %s -> %s", source_id, target_id)
+        return {
+            "status": "query_error", "source_id": source_id, "target_id": target_id,
+            "path": None, "error": "Graph query failed. Check backend logs.",
         }

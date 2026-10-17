@@ -1,7 +1,8 @@
 :root {
   font-family: Inter, system-ui, -apple-system, "Segoe UI", sans-serif;
   color: #edf3ff;
-  background: #080d17;
+  background: #061322;
+  color-scheme: dark;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
@@ -15,8 +16,12 @@ body {
   margin: 0;
   min-width: 320px;
   min-height: 100vh;
+  overflow-x: hidden;
+  background-image: radial-gradient(circle at 82% -10%, rgba(71, 122, 176, .16), transparent 30%), radial-gradient(circle at 0 40%, rgba(42, 173, 157, .08), transparent 30%);
 }
 
 button {
   font: inherit;
 }
+
+button, a, summary { -webkit-tap-highlight-color: transparent; }

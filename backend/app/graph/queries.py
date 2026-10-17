@@ -31,7 +31,8 @@ RETURN
         node IN nodes(p) |
         {
             id: node.id,
-            label: labels(node)[0]
+            label: coalesce(node.name, node.id),
+            type: labels(node)[0]
         }
     ] AS nodes,
 
@@ -71,7 +72,8 @@ RETURN
         node IN nodes(p) |
         {
             id: node.id,
-            label: labels(node)[0]
+            label: coalesce(node.name, node.id),
+            type: labels(node)[0]
         }
     ] AS nodes,
 
@@ -85,7 +87,13 @@ RETURN
         }
     ] AS edges,
 
-    properties(permission) AS excessive_permission
+    {
+        assessment: permission.assessment,
+        granted_actions: permission.granted_actions,
+        granted_resource_scope: permission.granted_resource_scope,
+        intended_scope: permission.intended_scope,
+        reason: permission.reason
+    } AS excessive_permission
 """
 
 
@@ -117,7 +125,8 @@ RETURN
         node IN nodes(p) |
         {
             id: node.id,
-            label: labels(node)[0]
+            label: coalesce(node.name, node.id),
+            type: labels(node)[0]
         }
     ] AS nodes,
 
@@ -169,7 +178,8 @@ RETURN
         node IN nodes(p) |
         {
             id: node.id,
-            label: labels(node)[0]
+            label: coalesce(node.name, node.id),
+            type: labels(node)[0]
         }
     ] AS nodes,
 
@@ -220,4 +230,36 @@ RETURN
     route.containment_status AS containment_status
 
 ORDER BY route.route_id
+"""
+
+
+# ============================================================
+# BOUNDED GENERIC ACCESS-PATH SUPPORT
+# ============================================================
+
+# This is deliberately a reviewed allow-list. The shortest-path tool does not
+# traverse arbitrary graph relationships or accept Cypher from the caller.
+FIND_SHORTEST_ACCESS_PATH_QUERY = """
+MATCH p = (source {id: $source_id})
+    -[*1..6]->
+    (target {id: $target_id})
+WHERE all(rel IN relationships(p) WHERE
+    type(rel) IN ['HAS_SESSION', 'CAN_ACCESS', 'RUNS_AS', 'CAN_ASSUME', 'CAN_READ']
+    AND (type(rel) <> 'HAS_SESSION' OR coalesce(rel.containment_status, 'ACTIVE') = 'ACTIVE')
+)
+RETURN
+    [node IN nodes(p) | {
+        id: node.id,
+        label: coalesce(node.name, node.id),
+        type: labels(node)[0]
+    }] AS nodes,
+    [rel IN relationships(p) | {
+        source: startNode(rel).id,
+        target: endNode(rel).id,
+        type: type(rel),
+        properties: properties(rel)
+    }] AS edges,
+    length(p) AS hop_count
+ORDER BY hop_count ASC
+LIMIT 1
 """

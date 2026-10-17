@@ -8,6 +8,7 @@ from app.agent.gemini_service import run_gemini_investigation
 from app.graph.connection import graph_connection
 from app.integration import (
     get_containment_status,
+    get_containment_history,
     investigate_alert,
     list_alerts,
     simulate_containment,
@@ -40,9 +41,15 @@ def health() -> dict:
     try:
         with graph_connection() as graph:
             graph.ro_query("RETURN 1 AS ok")
-        return {"status": "ok", "mode": "synthetic_falkordb"}
+        database_status = "ok"
     except Exception:
-        return {"status": "degraded", "mode": "synthetic_falkordb"}
+        database_status = "unavailable"
+    return {
+        "status": "ok" if database_status == "ok" else "degraded",
+        "api_status": "ok",
+        "database_status": database_status,
+        "mode": "synthetic_falkordb",
+    }
 
 
 @app.get("/api/alerts")
@@ -86,7 +93,7 @@ async def investigate_with_agent(request: InvestigationRequest) -> dict:
     return {
         "status": "completed",
         "alert_id": request.alert_id,
-        "answer": answer,
+        **answer,
         "data_source": "synthetic_falkordb",
         "provenance": "Synthetic seeded FalkorDB graph; not a live cloud tenant.",
     }
@@ -120,5 +127,12 @@ def containment_simulate(request: ContainmentSimulationRequest) -> dict:
         **result,
         "data_source": "synthetic_falkordb",
         "message": "Synthetic graph route updated; no live cloud session was changed.",
-        "verification": get_containment_status(request.alert_id),
     }
+
+
+@app.get("/api/containment/{alert_id}/history")
+def containment_history(alert_id: str) -> dict:
+    history = get_containment_history(alert_id)
+    if history is None:
+        raise HTTPException(status_code=404, detail="Containment scenario not found.")
+    return {"items": history, "data_source": "synthetic_falkordb"}
