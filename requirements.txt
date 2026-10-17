@@ -1,0 +1,10 @@
+async-timeout==5.0.1
+FalkorDB==1.8.0
+python-dateutil==2.9.0.post0
+redis==8.1.0
+six==1.17.0
+fastapi
+uvicorn[standard]
+python-dotenv
+google-genai
+mcp
