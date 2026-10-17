@@ -43,6 +43,24 @@ class ProposedAction(BaseModel):
     status: Literal["PROPOSED"]
 
 
+class ToolTraceEntry(BaseModel):
+    """Measured execution metadata for a deterministic investigation step."""
+
+    tool_name: str
+    input: dict[str, str]
+    result: str
+    duration_ms: int = Field(ge=0)
+    result_count: int = Field(ge=0)
+    evidence: list[str] = Field(default_factory=list)
+
+
+class RiskAssessment(BaseModel):
+    score: int = Field(ge=0, le=100)
+    severity: Literal["LOW", "MEDIUM", "HIGH", "CRITICAL"]
+    rule_version: str
+    factors: list[str]
+
+
 class InvestigationResponse(BaseModel):
     investigation_id: str
     alert_id: str
@@ -71,6 +89,9 @@ class InvestigationResponse(BaseModel):
     evidence: list[str]
     proposed_actions: list[ProposedAction]
     warnings: list[str] = Field(default_factory=list)
+    trace: list[ToolTraceEntry] = Field(default_factory=list)
+    risk_assessment: RiskAssessment | None = None
+    provenance: dict[str, str] = Field(default_factory=dict)
 
     # Makes it clear that this result is synthetic.
     data_source: Literal["synthetic_falkordb"] = "synthetic_falkordb"

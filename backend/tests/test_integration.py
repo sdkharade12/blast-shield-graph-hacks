@@ -1,15 +1,23 @@
 import unittest
+from contextlib import nullcontext
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from fastapi import HTTPException
 from pydantic import ValidationError
 
 from app import integration, main
+from app.agent import gemini_service
 from app.schemas import InvestigationRequest, InvestigationResponse
 from app.mcp import server as mcp_server
+from app.services import graph_service
+from app.graph.queries import FIND_SHORTEST_ACCESS_PATH_QUERY
 
 
 class IntegrationTests(unittest.TestCase):
+    def setUp(self):
+        mcp_server.TOOL_TRACE.clear()
+
     def test_catalog_has_one_entry_per_graph_scenario(self):
         self.assertEqual(
             [alert["scenario"] for alert in integration.ALERT_CATALOG],
@@ -84,13 +92,16 @@ class IntegrationTests(unittest.TestCase):
         self.assertEqual(result.outcome, "path_found")
         self.assertEqual(result.target, {"type": "Workload", "id": "exposed-api-01"})
         self.assertIsNone(result.identity_id)
-        self.assertIsNone(result.risk_score)
-        self.assertEqual(result.severity, "UNASSESSED")
+        self.assertEqual(result.risk_score, 65)
+        self.assertEqual(result.severity, "HIGH")
+        self.assertEqual(result.risk_assessment.rule_version, "demo-rules-v1")
+        self.assertEqual(result.trace[0].result, "path_found")
         self.assertEqual(result.data_source, "synthetic_falkordb")
         self.assertEqual(result.paths[0].nodes[0].label, "exposed-api-01")
         self.assertEqual(result.paths[0].nodes[0].type, "Workload")
         self.assertEqual(result.paths[0].edges[0].properties, {"scope": "read"})
         self.assertTrue(any("asset_sensitivity=critical" in item for item in result.evidence))
+        self.assertEqual(result.trace[0].evidence[0], "exposed-api-01")
 
     def test_no_path_is_not_unknown_or_query_error(self):
         with patch.object(
@@ -218,8 +229,158 @@ class IntegrationTests(unittest.TestCase):
         with patch.object(mcp_server, "run_investigation", lambda _alert_id: fake):
             result = mcp_server.investigate_alert("BH-1042")
             radius = mcp_server.get_blast_radius("BH-1042")
+        self.assertEqual(result["status"], "path_found")
         self.assertEqual(result["investigation"]["data_source"], "synthetic_falkordb")
         self.assertEqual(radius["path_count"], len(result["investigation"]["paths"]))
+
+    def test_mcp_propagates_canonical_non_finding_outcomes(self):
+        fake = InvestigationResponse(
+            investigation_id="INV-BH-1042",
+            alert_id="BH-1042",
+            target={"type": "Identity", "id": "developer_07"},
+            outcome="no_path_in_graph",
+            risk_score=None,
+            severity="UNASSESSED",
+            summary="No path.",
+            paths=[], evidence=[], proposed_actions=[],
+        )
+        with patch.object(mcp_server, "run_investigation", lambda _alert_id: fake):
+            result = mcp_server.investigate_alert("BH-1042")
+        self.assertEqual(result["status"], "no_path_in_graph")
+
+    def test_mcp_records_actual_tool_calls_and_trace_can_be_read(self):
+        with patch.object(mcp_server, "run_investigation", return_value=None):
+            # A known alert dispatch that fails to produce a canonical result is query_error.
+            response = mcp_server.investigate_alert("BH-1042")
+        trace = mcp_server.get_tool_trace()["items"]
+        self.assertEqual(response["status"], "query_error")
+        self.assertEqual(trace[0]["tool_name"], "investigate_alert")
+        self.assertEqual(trace[0]["input"], {"alert_id": "BH-1042"})
+        self.assertGreaterEqual(trace[0]["duration_ms"], 0)
+
+    def test_shortest_path_query_is_depth_and_relationship_bounded(self):
+        self.assertIn("*1..6", FIND_SHORTEST_ACCESS_PATH_QUERY)
+        for relationship in ("HAS_SESSION", "CAN_ACCESS", "RUNS_AS", "CAN_ASSUME", "CAN_READ"):
+            self.assertIn(relationship, FIND_SHORTEST_ACCESS_PATH_QUERY)
+        self.assertIn("all(rel IN relationships(p)", FIND_SHORTEST_ACCESS_PATH_QUERY)
+
+    def _mock_shortest_query(self, source, target, paths):
+        graph = SimpleNamespace()
+
+        def ro_query(query, params=None):
+            if "MATCH (n {id: $entity_id})" in query:
+                entity_id = params["entity_id"]
+                row = source if entity_id == "source" else target
+                return SimpleNamespace(result_set=[row] if row else [])
+            return SimpleNamespace(result_set=paths)
+
+        graph.ro_query = ro_query
+        return patch.object(graph_service, "graph_connection", lambda: nullcontext(graph))
+
+    def test_shortest_path_distinguishes_unknown_source_and_target(self):
+        with self._mock_shortest_query(None, ("target", "Target", "DataAsset"), []):
+            unknown_source = graph_service.find_shortest_access_path("source", "target")
+        with self._mock_shortest_query(("source", "Source", "Identity"), None, []):
+            unknown_target = graph_service.find_shortest_access_path("source", "target")
+        self.assertEqual(unknown_source["status"], "unknown_source")
+        self.assertEqual(unknown_target["status"], "unknown_target")
+
+    def test_shortest_path_returns_ordered_graph_evidence_and_no_path(self):
+        source = ("source", "Auditor", "Identity")
+        target = ("target", "Audit report", "DataAsset")
+        node_data = [
+            {"id": "source", "label": "Auditor", "type": "Identity"},
+            {"id": "target", "label": "Audit report", "type": "DataAsset"},
+        ]
+        edge_data = [{"source": "source", "target": "target", "type": "CAN_READ", "properties": {"scope": "audit"}}]
+        with self._mock_shortest_query(source, target, [(node_data, edge_data, 1)]):
+            found = graph_service.find_shortest_access_path("source", "target")
+        with self._mock_shortest_query(source, target, []):
+            missing = graph_service.find_shortest_access_path("source", "target")
+        self.assertEqual(found["status"], "path_found")
+        self.assertEqual(found["hop_count"], 1)
+        self.assertEqual([node["id"] for node in found["path"]["nodes"]], ["source", "target"])
+        self.assertEqual(found["path"]["edges"][0]["properties"], {"scope": "audit"})
+        self.assertEqual(missing["status"], "no_path")
+        self.assertEqual(missing["max_hops"], 6)
+
+    def test_grounding_accepts_only_canonical_score_and_relationship_claims(self):
+        fake = InvestigationResponse(
+            investigation_id="INV-BH-WORKLOAD-3001",
+            alert_id="BH-WORKLOAD-3001",
+            target={"type": "Workload", "id": "exposed-api-01"},
+            outcome="path_found", risk_score=65, severity="HIGH",
+            summary="Path found.",
+            paths=[{
+                "nodes": [
+                    {"id": "exposed-api-01", "label": "API", "type": "Workload"},
+                    {"id": "api-service-role", "label": "Role", "type": "IAMRole"},
+                    {"id": "customer-db", "label": "Database", "type": "DataAsset"},
+                ],
+                "edges": [
+                    {"source": "exposed-api-01", "target": "api-service-role", "type": "RUNS_AS"},
+                    {"source": "api-service-role", "target": "customer-db", "type": "CAN_READ"},
+                ],
+            }], evidence=[], proposed_actions=[], warnings=[],
+            provenance={"dataset_version": "blastshield-synthetic-v1"},
+        )
+        with patch.object(gemini_service, "investigate_alert", return_value=fake):
+            accepted, accepted_check = gemini_service._ground_answer(
+                "Alert BH-WORKLOAD-3001 (INV-BH-WORKLOAD-3001) in blastshield-synthetic-v1: "
+                "the represented path uses RUNS_AS and CAN_READ. Risk score: 65/100.",
+                "BH-WORKLOAD-3001",
+            )
+            fallback, failed_check = gemini_service._ground_answer(
+                "The path uses CAN_ASSUME and has a risk score of 99/100.",
+                "BH-WORKLOAD-3001",
+            )
+        self.assertIn("represented path", accepted)
+        self.assertEqual(accepted_check["status"], "grounded")
+        self.assertIn("Canonical investigation", fallback)
+        self.assertEqual(failed_check["status"], "fallback")
+
+    def test_containment_verification_uses_post_action_graph_query(self):
+        before = {"status": "path_found", "paths": [{"nodes": []}], "error": None}
+        after = {"status": "no_path", "paths": [], "error": None}
+        with patch.object(
+            integration.graph_service,
+            "find_remaining_containment_paths",
+            side_effect=[before, after],
+        ), patch.object(
+            integration.graph_service,
+            "simulate_containment",
+            return_value={"status": "contained", "containment_status": "BLOCKED"},
+        ), patch.object(
+            integration.graph_service,
+            "get_containment_route_statuses",
+            return_value={"status": "routes_found", "routes": []},
+        ):
+            result = integration.simulate_containment("BH-CONTAINMENT-4001", "primary")
+        self.assertEqual(result["verification_outcome"], "no_qualifying_path_in_modeled_graph")
+        self.assertEqual(result["before"], before)
+        self.assertEqual(result["after"], after)
+        self.assertTrue(result["action"]["action_id"].startswith("SIM-"))
+        self.assertEqual(result["action"]["previous_status"], "ACTIVE")
+
+    def test_containment_post_action_query_error_is_not_success(self):
+        with patch.object(
+            integration.graph_service,
+            "find_remaining_containment_paths",
+            side_effect=[{"status": "path_found", "paths": [], "error": None},
+                         {"status": "query_error", "paths": [], "error": "offline"}],
+        ), patch.object(
+            integration.graph_service,
+            "simulate_containment",
+            return_value={"status": "contained", "containment_status": "BLOCKED"},
+        ), patch.object(
+            integration.graph_service,
+            "get_containment_route_statuses",
+            return_value={"status": "routes_found", "routes": []},
+        ):
+            result = integration.simulate_containment("BH-CONTAINMENT-4001", "primary")
+        self.assertEqual(result["status"], "contained")
+        self.assertEqual(result["verification_outcome"], "verification_failed")
+        self.assertEqual(result["verification_error"], "offline")
 
 
 if __name__ == "__main__":

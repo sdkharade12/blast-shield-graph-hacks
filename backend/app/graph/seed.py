@@ -86,6 +86,40 @@ def seed_blastshield_graph(graph) -> None:
         MERGE (config:DataAsset {id: 'config-store'})
         SET config.name = 'Configuration Store',
             config.sensitivity = 'critical'
+
+        // Isolated reasoning fixture: an auditor has an in-scope reporting
+        // route with a non-critical branch and a longer role-assumption path.
+        MERGE (auditor:Identity {id: 'auditor_02'})
+        SET auditor.name = 'Auditor 02', auditor.status = 'ACTIVE'
+
+        MERGE (audit_session:Session {id: 'sess_auditor_02'})
+        SET audit_session.status = 'ACTIVE'
+
+        MERGE (reporter:Workload {id: 'audit-reporter-02'})
+        SET reporter.name = 'Audit Reporter', reporter.status = 'RUNNING',
+            reporter.environment = 'DEVELOPMENT'
+
+        MERGE (audit_role:IAMRole {id: 'audit-readonly-role'})
+        SET audit_role.name = 'Audit Read Only Role',
+            audit_role.intended_scope = 'AUDIT_REPORTING'
+
+        MERGE (staging_role:IAMRole {id: 'staging-observer-role'})
+        SET staging_role.name = 'Staging Observer Role',
+            staging_role.intended_scope = 'AUDIT_REPORTING'
+
+        MERGE (cache:DataAsset {id: 'analytics-cache'})
+        SET cache.name = 'Analytics Cache', cache.sensitivity = 'internal',
+            cache.scope = 'AUDIT_REPORTING'
+
+        MERGE (report:DataAsset {id: 'staging-report'})
+        SET report.name = 'Staging Audit Report', report.sensitivity = 'internal'
+
+        // Known entities with no qualifying path support a real no-path test.
+        MERGE (dormant:Identity {id: 'dormant_identity_03'})
+        SET dormant.name = 'Dormant Identity 03', dormant.status = 'INACTIVE'
+
+        MERGE (orphan:DataAsset {id: 'unattached-asset-01'})
+        SET orphan.name = 'Unattached Archive', orphan.sensitivity = 'critical'
     """)
 
     # ---------------------------------------------------------
@@ -118,6 +152,9 @@ def seed_blastshield_graph(graph) -> None:
 
         MERGE (ar)-[permission:CAN_ASSUME]->(pr)
         SET permission.assessment = 'EXCESSIVE',
+            permission.granted_actions = 'sts:AssumeRole',
+            permission.granted_resource_scope = 'production-role',
+            permission.intended_scope = 'ANALYTICS',
             permission.reason =
                 'Analytics role can assume a production role '
                 + 'outside its intended scope'
@@ -128,6 +165,34 @@ def seed_blastshield_graph(graph) -> None:
         MERGE (api_role)-[:CAN_READ]->(d)
         MERGE (api_role)-[:CAN_READ]->(payments)
         MERGE (api_role)-[:CAN_READ]->(config)
+
+    """)
+
+    # Keep the fixture relationships in a separate query. FalkorDB requires a
+    # WITH between read clauses and writes in one query; splitting here keeps
+    # the seed easy to reason about and safely repeatable.
+    graph.query("""
+        // This disconnected branch is deliberately separate from the four
+        // alert targets so their canonical investigation paths stay stable.
+        MATCH (auditor:Identity {id: 'auditor_02'})
+        MATCH (audit_session:Session {id: 'sess_auditor_02'})
+        MATCH (reporter:Workload {id: 'audit-reporter-02'})
+        MATCH (audit_role:IAMRole {id: 'audit-readonly-role'})
+        MATCH (staging_role:IAMRole {id: 'staging-observer-role'})
+        MATCH (cache:DataAsset {id: 'analytics-cache'})
+        MATCH (report:DataAsset {id: 'staging-report'})
+
+        MERGE (auditor)-[:HAS_SESSION]->(audit_session)
+        MERGE (audit_session)-[:CAN_ACCESS]->(reporter)
+        MERGE (reporter)-[:RUNS_AS]->(audit_role)
+        MERGE (audit_role)-[:CAN_READ {assessment: 'WITHIN_SCOPE', granted_actions: 'data:Read', granted_resource_scope: 'AUDIT_REPORTING', intended_scope: 'AUDIT_REPORTING'}]->(cache)
+        MERGE (audit_role)-[scope_check:CAN_ASSUME]->(staging_role)
+        SET scope_check.assessment = 'WITHIN_SCOPE',
+            scope_check.granted_actions = 'sts:AssumeRole',
+            scope_check.granted_resource_scope = 'staging-observer-role',
+            scope_check.intended_scope = 'AUDIT_REPORTING',
+            scope_check.reason = 'Role access stays within the audit reporting environment'
+        MERGE (staging_role)-[:CAN_READ]->(report)
     """)
 
     print("BlastShield graph seeding complete.")
