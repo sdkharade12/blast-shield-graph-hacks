@@ -15,7 +15,7 @@ from app.graph.queries import (
     FIND_REMAINING_CONTAINMENT_PATHS_QUERY,
     SIMULATE_CONTAINMENT_QUERY,
     GET_CONTAINMENT_ROUTE_STATUS_QUERY,
-    FIND_SHORTEST_ACCESS_PATH_QUERY,
+    FIND_SHORTEST_ACCESS_PATH_QUERIES,
 )
 
 logger = logging.getLogger(__name__)
@@ -474,20 +474,27 @@ def get_containment_route_statuses(
 # BOUNDED SHORTEST ACCESS PATH (MCP TOOL)
 # ============================================================
 
-def find_shortest_access_path(source_id: str, target_id: str) -> dict[str, Any]:
+def find_shortest_access_path(source_id: str, target_id: str, max_hops: int = MAX_ACCESS_PATH_HOPS) -> dict[str, Any]:
     """Return the shortest supported directed access path in the graph.
 
     FalkorDB installations used during demos do not all expose the same graph
     algorithm procedures. This fixed parameterized Cypher query is the
-    portable fallback: relationship types and depth are both bounded to six.
+    portable fallback: relationship types are allow-listed and max_hops selects
+    only a prebuilt query bound from one through six.
     """
+    if isinstance(max_hops, bool) or not isinstance(max_hops, int) or not 1 <= max_hops <= MAX_ACCESS_PATH_HOPS:
+        return {
+            "status": "invalid_input", "source_id": source_id, "target_id": target_id,
+            "path": None, "max_hops": max_hops,
+            "error": f"max_hops must be an integer from 1 to {MAX_ACCESS_PATH_HOPS}.",
+        }
     if not all(
         isinstance(value, str) and value.strip() and len(value.strip()) <= 128
         for value in (source_id, target_id)
     ):
         return {
             "status": "invalid_input", "source_id": source_id, "target_id": target_id,
-            "path": None, "error": "Valid source and target entity IDs are required.",
+            "path": None, "max_hops": max_hops, "error": "Valid source and target entity IDs are required.",
         }
     source_id, target_id = source_id.strip(), target_id.strip()
     try:
@@ -504,23 +511,23 @@ def find_shortest_access_path(source_id: str, target_id: str) -> dict[str, Any]:
             if not source_rows:
                 return {
                     "status": "unknown_source", "source_id": source_id, "target_id": target_id,
-                    "path": None, "hop_count": None, "error": None,
+                    "path": None, "hop_count": None, "max_hops": max_hops, "error": None,
                 }
             if not target_rows:
                 return {
                     "status": "unknown_target", "source_id": source_id, "target_id": target_id,
-                    "path": None, "hop_count": None, "error": None,
+                    "path": None, "hop_count": None, "max_hops": max_hops, "error": None,
                 }
             if source_id == target_id:
                 source = source_rows[0]
                 return {
                     "status": "path_found", "source_id": source_id, "target_id": target_id,
-                    "hop_count": 0,
+                    "hop_count": 0, "max_hops": max_hops,
                     "path": {"nodes": [{"id": source[0], "label": source[1], "type": source[2]}], "edges": []},
                     "error": None,
                 }
             path_rows = graph.ro_query(
-                FIND_SHORTEST_ACCESS_PATH_QUERY,
+                FIND_SHORTEST_ACCESS_PATH_QUERIES[max_hops],
                 {"source_id": source_id, "target_id": target_id},
             ).result_set
         if path_rows:
@@ -531,15 +538,18 @@ def find_shortest_access_path(source_id: str, target_id: str) -> dict[str, Any]:
                 edge["properties"] = dict(edge.get("properties") or {})
             return {
                 "status": "path_found", "source_id": source_id, "target_id": target_id,
-                "hop_count": int(row[2]), "path": {"nodes": nodes, "edges": edges}, "error": None,
+                "hop_count": int(row[2]), "max_hops": max_hops,
+                "path": {"nodes": nodes, "edges": edges}, "error": None,
             }
         return {
             "status": "no_path", "source_id": source_id, "target_id": target_id,
-            "path": None, "hop_count": None, "max_hops": MAX_ACCESS_PATH_HOPS, "error": None,
+            "path": None, "hop_count": None, "max_hops": max_hops,
+            "message": f"No qualifying path within the selected traversal depth ({max_hops} hops).",
+            "error": None,
         }
     except Exception:
         logger.exception("Shortest access-path query failed for %s -> %s", source_id, target_id)
         return {
             "status": "query_error", "source_id": source_id, "target_id": target_id,
-            "path": None, "error": "Graph query failed. Check backend logs.",
+            "path": None, "max_hops": max_hops, "error": "Graph query failed. Check backend logs.",
         }

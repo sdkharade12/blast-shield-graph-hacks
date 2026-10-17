@@ -84,12 +84,24 @@ def _ground_answer(answer: str, alert_id: str, canonical_result=None) -> tuple[s
     }
     unsupported_relationships = sorted(claimed_relationships - returned_relationships)
     claims_contained = bool(re.search(r"(?:fully|successfully) contained|no remaining access", answer, re.I))
-    if unsupported or has_invented_score or unsupported_relationships or (claims_contained and result.outcome == "path_found"):
+    containment_claim_unsupported = claims_contained and result.outcome == "path_found"
+    reason_codes = []
+    if unsupported:
+        reason_codes.append("unsupported_entity")
+    if has_invented_score:
+        reason_codes.append("risk_score_mismatch")
+    if unsupported_relationships:
+        reason_codes.append("unsupported_relationship")
+    if containment_claim_unsupported:
+        reason_codes.append("unsupported_containment_claim")
+    if reason_codes:
         return _deterministic_summary(alert_id, result), {
             "status": "fallback",
-            "reason": "unsupported_entity_or_claim",
+            "reason": ",".join(reason_codes),
+            "reason_codes": reason_codes,
             "unsupported_entities": unsupported,
             "unsupported_relationships": unsupported_relationships,
+            "claimed_scores": claimed_scores if has_invented_score else [],
         }
     return answer, {"status": "grounded", "validated_entity_count": len(known_ids)}
 

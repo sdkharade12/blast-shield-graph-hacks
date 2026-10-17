@@ -1,4 +1,5 @@
 import unittest
+import asyncio
 from contextlib import nullcontext
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -11,7 +12,7 @@ from app.agent import gemini_service
 from app.schemas import InvestigationRequest, InvestigationResponse
 from app.mcp import server as mcp_server
 from app.services import graph_service
-from app.graph.queries import FIND_SHORTEST_ACCESS_PATH_QUERY
+from app.graph.queries import FIND_SHORTEST_ACCESS_PATH_QUERY, FIND_SHORTEST_ACCESS_PATH_QUERIES
 
 
 class IntegrationTests(unittest.TestCase):
@@ -298,11 +299,15 @@ class IntegrationTests(unittest.TestCase):
 
     def test_shortest_path_query_is_depth_and_relationship_bounded(self):
         self.assertIn("*1..6", FIND_SHORTEST_ACCESS_PATH_QUERY)
+        self.assertEqual(set(FIND_SHORTEST_ACCESS_PATH_QUERIES), set(range(1, 7)))
+        for depth, query in FIND_SHORTEST_ACCESS_PATH_QUERIES.items():
+            self.assertIn(f"*1..{depth}", query)
+            self.assertNotIn("__MAX_HOPS__", query)
         for relationship in ("HAS_SESSION", "CAN_ACCESS", "RUNS_AS", "CAN_ASSUME", "CAN_READ"):
             self.assertIn(relationship, FIND_SHORTEST_ACCESS_PATH_QUERY)
         self.assertIn("all(rel IN relationships(p)", FIND_SHORTEST_ACCESS_PATH_QUERY)
 
-    def _mock_shortest_query(self, source, target, paths):
+    def _mock_shortest_query(self, source, target, paths, query_log=None):
         graph = SimpleNamespace()
 
         def ro_query(query, params=None):
@@ -310,6 +315,8 @@ class IntegrationTests(unittest.TestCase):
                 entity_id = params["entity_id"]
                 row = source if entity_id == "source" else target
                 return SimpleNamespace(result_set=[row] if row else [])
+            if query_log is not None:
+                query_log.append(query)
             return SimpleNamespace(result_set=paths)
 
         graph.ro_query = ro_query
@@ -341,6 +348,69 @@ class IntegrationTests(unittest.TestCase):
         self.assertEqual(found["path"]["edges"][0]["properties"], {"scope": "audit"})
         self.assertEqual(missing["status"], "no_path")
         self.assertEqual(missing["max_hops"], 6)
+        self.assertIn("No qualifying path within the selected traversal depth", missing["message"])
+
+    def test_shortest_path_depth_is_validated_and_uses_reviewed_template(self):
+        for invalid in (0, 7, -1, True, 3.5, "5"):
+            result = graph_service.find_shortest_access_path("source", "target", max_hops=invalid)
+            self.assertEqual(result["status"], "invalid_input")
+        query_log = []
+        with self._mock_shortest_query(
+            ("source", "Source", "Identity"), ("target", "Target", "DataAsset"), [], query_log
+        ):
+            result = graph_service.find_shortest_access_path("source", "target", max_hops=4)
+        self.assertEqual(result["status"], "no_path")
+        self.assertEqual(result["max_hops"], 4)
+        self.assertIn("*1..4", query_log[0])
+
+    def test_shortest_path_query_failure_is_not_reported_as_no_path(self):
+        calls = 0
+        def ro_query(query, params=None):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                return SimpleNamespace(result_set=[("source", "Source", "Identity")])
+            if calls == 2:
+                return SimpleNamespace(result_set=[("target", "Target", "DataAsset")])
+            raise RuntimeError("database unavailable")
+        graph = SimpleNamespace(ro_query=ro_query)
+        with patch.object(graph_service, "graph_connection", lambda: nullcontext(graph)):
+            result = graph_service.find_shortest_access_path("source", "target", max_hops=5)
+        self.assertEqual(result["status"], "query_error")
+        self.assertNotEqual(result["status"], "no_path")
+
+    def test_mcp_shortest_path_exposes_bounded_depth(self):
+        with patch.object(mcp_server, "run_shortest_path", return_value={"status": "no_path", "max_hops": 3}) as run:
+            result = mcp_server.find_shortest_access_path("auditor_02", "staging-report", max_hops=3)
+        run.assert_called_once_with("auditor_02", "staging-report", max_hops=3)
+        self.assertEqual(result["data_source"], "synthetic_falkordb")
+        self.assertEqual(result["max_hops"], 3)
+
+    def test_http_depth_explorer_uses_strict_bounded_request(self):
+        request = main.ShortestPathRequest(source_id="source", target_id="target", max_hops=5)
+        with patch.object(main, "find_shortest_access_path", return_value={"status": "no_path", "max_hops": 5}) as run:
+            result = main.shortest_path(request)
+        run.assert_called_once_with("source", "target", 5)
+        self.assertEqual(result["data_source"], "synthetic_falkordb")
+        with self.assertRaises(ValidationError):
+            main.ShortestPathRequest(source_id="source", target_id="target", max_hops=True)
+
+    def test_agent_service_failure_returns_inspectable_canonical_fallback(self):
+        fake = InvestigationResponse(
+            investigation_id="INV-BH-1042", alert_id="BH-1042",
+            target={"type": "Identity", "id": "developer_07"}, identity_id="developer_07",
+            outcome="path_found", risk_score=35, severity="MEDIUM", summary="Canonical path found.",
+            paths=[], evidence=[], proposed_actions=[], warnings=[],
+        )
+        with patch("app.integration.find_alert", return_value={"id": "BH-1042"}), \
+             patch.object(main, "run_gemini_investigation", side_effect=RuntimeError("unavailable")), \
+             patch.object(main, "investigate_alert", return_value=fake):
+            result = asyncio.run(main.investigate_with_agent(InvestigationRequest(alert_id="BH-1042")))
+        self.assertEqual(result["status"], "fallback")
+        self.assertEqual(result["grounding"]["status"], "fallback")
+        self.assertEqual(result["grounding"]["reason"], "gemini_configuration_or_service")
+        self.assertIn("Canonical investigation", result["answer"])
+        self.assertEqual(result["trace"], [])
 
     def test_grounding_accepts_only_canonical_score_and_relationship_claims(self):
         fake = InvestigationResponse(
@@ -396,6 +466,8 @@ class IntegrationTests(unittest.TestCase):
         self.assertEqual(accepted_check["status"], "grounded")
         self.assertIn("Canonical investigation", fallback)
         self.assertEqual(failed_check["status"], "fallback")
+        self.assertIn("risk_score_mismatch", failed_check["reason_codes"])
+        self.assertIn("unsupported_relationship", failed_check["reason_codes"])
 
     def test_containment_verification_uses_post_action_graph_query(self):
         before = {"status": "path_found", "paths": [{"nodes": []}], "error": None}

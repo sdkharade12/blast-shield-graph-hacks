@@ -142,7 +142,8 @@ def seed_blastshield_graph(graph) -> None:
 
         // Scenario 1: Identity-to-data access path.
 
-        MERGE (i)-[:HAS_SESSION]->(s)
+        MERGE (i)-[identity_session:HAS_SESSION]->(s)
+        SET identity_session.response_status = 'ACTIVE'
         MERGE (s)-[:CAN_ACCESS]->(w)
         MERGE (w)-[:RUNS_AS]->(r)
         MERGE (r)-[:CAN_ASSUME]->(pr)
@@ -152,6 +153,7 @@ def seed_blastshield_graph(graph) -> None:
 
         MERGE (ar)-[permission:CAN_ASSUME]->(pr)
         SET permission.assessment = 'EXCESSIVE',
+            permission.response_status = 'ACTIVE',
             permission.granted_actions = 'sts:AssumeRole',
             permission.granted_resource_scope = 'production-role',
             permission.intended_scope = 'ANALYTICS',
@@ -162,6 +164,7 @@ def seed_blastshield_graph(graph) -> None:
         // Scenario 3: Exposed workload and its reachable assets.
 
         MERGE (api)-[:RUNS_AS]->(api_role)
+        SET api.response_status = 'ACTIVE'
         MERGE (api_role)-[:CAN_READ]->(d)
         MERGE (api_role)-[:CAN_READ]->(payments)
         MERGE (api_role)-[:CAN_READ]->(config)
@@ -193,6 +196,9 @@ def seed_blastshield_graph(graph) -> None:
             scope_check.intended_scope = 'AUDIT_REPORTING',
             scope_check.reason = 'Role access stays within the audit reporting environment'
         MERGE (staging_role)-[:CAN_READ]->(report)
+        // Second modeled route to the same cache: compare a direct four-hop
+        // path with a five-hop role-assumption alternative.
+        MERGE (staging_role)-[:CAN_READ]->(cache)
     """)
 
     print("BlastShield graph seeding complete.")

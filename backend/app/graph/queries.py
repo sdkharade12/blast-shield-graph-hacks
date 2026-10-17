@@ -15,7 +15,7 @@ LIMIT 1
 FIND_SENSITIVE_RESOURCE_PATHS_QUERY = """
 MATCH p =
     (i:Identity {id: $identity_id})
-    -[:HAS_SESSION]->
+    -[session_edge:HAS_SESSION]->
     (s:Session {status: 'ACTIVE'})
     -[:CAN_ACCESS]->
     (w:Workload {status: 'RUNNING'})
@@ -25,6 +25,7 @@ MATCH p =
     (pr:IAMRole)
     -[:CAN_READ]->
     (d:DataAsset {sensitivity: 'critical'})
+WHERE coalesce(session_edge.response_status, 'ACTIVE') = 'ACTIVE'
 
 RETURN
     [
@@ -66,6 +67,7 @@ MATCH p =
     (pr:IAMRole)
     -[:CAN_READ]->
     (d:DataAsset {sensitivity: 'critical'})
+WHERE coalesce(permission.response_status, 'ACTIVE') = 'ACTIVE'
 
 RETURN
     [
@@ -119,6 +121,7 @@ MATCH p =
     (r:IAMRole)
     -[:CAN_READ]->
     (d:DataAsset {sensitivity: 'critical'})
+WHERE coalesce(w.response_status, 'ACTIVE') <> 'ISOLATED'
 
 RETURN
     [
@@ -239,13 +242,17 @@ ORDER BY route.route_id
 
 # This is deliberately a reviewed allow-list. The shortest-path tool does not
 # traverse arbitrary graph relationships or accept Cypher from the caller.
-FIND_SHORTEST_ACCESS_PATH_QUERY = """
+_SHORTEST_ACCESS_PATH_QUERY_TEMPLATE = """
 MATCH p = (source {id: $source_id})
-    -[*1..6]->
+    -[*1..__MAX_HOPS__]->
     (target {id: $target_id})
 WHERE all(rel IN relationships(p) WHERE
     type(rel) IN ['HAS_SESSION', 'CAN_ACCESS', 'RUNS_AS', 'CAN_ASSUME', 'CAN_READ']
     AND (type(rel) <> 'HAS_SESSION' OR coalesce(rel.containment_status, 'ACTIVE') = 'ACTIVE')
+    AND coalesce(rel.response_status, 'ACTIVE') <> 'BLOCKED'
+)
+AND all(node IN nodes(p) WHERE
+    labels(node)[0] <> 'Workload' OR coalesce(node.response_status, 'ACTIVE') <> 'ISOLATED'
 )
 RETURN
     [node IN nodes(p) | {
@@ -263,3 +270,12 @@ RETURN
 ORDER BY hop_count ASC
 LIMIT 1
 """
+
+# FalkorDB versions used for the demo do not consistently accept a parameter
+# in a variable-length relationship bound. Keep all supported bounds in this
+# small, reviewed allow-list; caller input never becomes Cypher text.
+FIND_SHORTEST_ACCESS_PATH_QUERIES = {
+    depth: _SHORTEST_ACCESS_PATH_QUERY_TEMPLATE.replace("__MAX_HOPS__", str(depth))
+    for depth in range(1, 7)
+}
+FIND_SHORTEST_ACCESS_PATH_QUERY = FIND_SHORTEST_ACCESS_PATH_QUERIES[6]
