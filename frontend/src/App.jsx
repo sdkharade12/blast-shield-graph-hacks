@@ -32,6 +32,10 @@ function OutcomeBadge({ outcome }) {
   return <span className={`outcome-badge ${outcome || "unknown"}`}>{OUTCOME_LABELS[outcome] || outcome || "Not investigated"}</span>;
 }
 
+function scenarioType(scenario = "") {
+  return scenario.replaceAll("_", " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
+
 export default function App() {
   const [alerts, setAlerts] = useState([]);
   const [selectedAlert, setSelectedAlert] = useState(null);
@@ -275,23 +279,24 @@ export default function App() {
         <span className="brand-mark">✦</span><span><strong>BLAST<span>SHIELD</span></strong><small>GRAPH SECURITY</small></span>
       </a>
       <div className="topbar-status">
-        <span className="source-badge"><Icon>◈</Icon> SYNTHETIC FALKORDB</span>
-        <span className={`health-pill ${apiReachable ? "good" : "bad"}`}><i /> API {apiReachable ? "REACHABLE" : "UNREACHABLE"}</span>
-        <span className={`health-pill ${databaseOnline ? "good" : "bad"}`}><i /> GRAPH DB {databaseOnline ? "CONNECTED" : "UNAVAILABLE"}</span>
+        <span className="source-badge"><Icon>◈</Icon> Synthetic FalkorDB</span>
+        <span className={`health-pill ${apiReachable ? "good" : "bad"}`}><i aria-hidden="true" /> API {apiReachable ? "Reachable" : "Unreachable"}</span>
+        <span className={`health-pill ${databaseOnline ? "good" : "bad"}`}><i aria-hidden="true" /> Graph DB {databaseOnline ? "Connected" : "Unavailable"}</span>
       </div>
     </header>
 
     <main id="main">
       <section className="page-intro">
-        <div><p className="eyebrow">CONNECTED-DATA INVESTIGATION</p><h1>Security investigations</h1><p>Choose a scenario to trace modeled access paths and inspect the evidence behind each result.</p></div>
+        <div><p className="eyebrow">CONNECTED-DATA INVESTIGATION</p><h1>Security investigations</h1><p>Trace modeled access paths, understand their impact, and review the evidence behind each finding.</p></div>
         <div className="live-metrics" aria-label="Current investigation metrics">
-          <span><b>{alerts.length || "—"}</b>SCENARIOS</span>
-          <span><b>{investigation ? paths.length : "—"}</b>RETURNED PATHS</span>
-          <span><b>{investigation ? `${investigation.trace?.[0]?.duration_ms ?? "—"} ms` : "—"}</b>GRAPH QUERY</span>
+          <span><b>{alerts.length || "—"}</b><small>Modeled scenarios</small></span>
+          <span><b>{investigation ? paths.length : "—"}</b><small>Paths in this result</small></span>
+          <span><b>{investigation ? `${investigation.trace?.[0]?.duration_ms ?? "—"} ms` : "—"}</b><small>Query duration</small></span>
         </div>
       </section>
 
-      {graphDown && <div className="notice-banner warning"><Icon>!</Icon>API is reachable, but FalkorDB is unavailable. Start the database and retry the investigation.</div>}
+      {!loading && !apiReachable && <div className="notice-banner warning" role="status"><Icon>!</Icon><div><strong>API unavailable</strong><span>Start the FastAPI service to load scenarios and graph results.</span></div></div>}
+      {graphDown && <div className="notice-banner warning" role="status"><Icon>!</Icon><div><strong>Graph database unavailable</strong><span>The API is reachable, but FalkorDB is not. Start the database and retry the investigation.</span></div></div>}
       {loading && <div className="scenario-skeleton"><i /><i /><i /><i /></div>}
       {!loading && <nav className="scenario-nav" aria-label="Investigation scenarios">
         {alerts.map((alert, index) => <button
@@ -299,15 +304,16 @@ export default function App() {
           type="button"
           className={`scenario-tab ${selectedAlert?.id === alert.id ? "selected" : ""}`}
           aria-current={selectedAlert?.id === alert.id ? "page" : undefined}
+          aria-busy={selectedAlert?.id === alert.id && investigating}
           onClick={() => resetWorkspace(alert)}
-        ><span className="tab-index">0{index + 1}</span><span className="tab-copy"><small>{alert.id}</small><strong>{alert.title}</strong></span><span className="queue-status">{alert.status}</span></button>)}
+        ><span className="tab-index">0{String(index + 1).padStart(2, "0")}</span><span className="tab-copy"><small>{alert.id}</small><strong>{alert.title}</strong><span className="scenario-type">{scenarioType(alert.scenario)}</span></span><span className="queue-status">{selectedAlert?.id === alert.id && investigating ? "Loading" : alert.status}</span></button>)}
       </nav>}
 
       {selectedAlert && <section className="selected-case">
-        <div className="case-identity"><div><p className="eyebrow">SELECTED SCENARIO</p><h2>{selectedAlert.title}</h2></div><span className="alert-id">{selectedAlert.id}</span></div>
-          <div className="case-target"><span>Target</span><strong>{investigation?.target?.type || selectedAlert.target_type || "—"}</strong><code>{investigation?.target?.id || selectedAlert.target_id || "Run investigation to resolve"}</code></div>
-        <button className="primary-button" disabled={!databaseOnline || investigating} onClick={investigate}>
-          <Icon>{investigating ? "◌" : "⌁"}</Icon>{investigating ? "INVESTIGATING…" : investigation ? "RUN AGAIN" : "INVESTIGATE"}
+        <div className="case-identity"><div><p className="eyebrow">Selected investigation · {selectedAlert.id}</p><h2>{selectedAlert.title}</h2></div></div>
+        <div className="case-target"><span>Investigation target</span><strong>{investigation?.target?.type || selectedAlert.target_type || "—"}</strong><code>{investigation?.target?.id || selectedAlert.target_id || "Target not supplied"}</code></div>
+        <button className="primary-button" disabled={!databaseOnline || investigating} onClick={investigate} aria-busy={investigating}>
+          <Icon>{investigating ? "◌" : "⌁"}</Icon>{investigating ? "Investigating…" : investigation ? "Run again" : "Investigate"}
         </button>
       </section>}
 
@@ -316,59 +322,105 @@ export default function App() {
       {!investigation && !investigating && !investigationError && <section className="empty-state panel"><span className="empty-mark">⌁</span><div><strong>Investigation ready</strong><p>Run the selected scenario to display its graph evidence, outcome, and risk factors.</p></div></section>}
 
       {investigation && <>
-        <section className="investigation-heading"><div><OutcomeBadge outcome={investigation.outcome} /><p>{investigation.summary}</p><small>Potential reachability does not prove exploitation.</small></div>{investigation.risk_assessment ? <div className="risk-summary"><span>DEMO RISK · {investigation.risk_assessment.rule_version}</span><b>{investigation.risk_assessment.score}<small>/100</small></b><strong>{investigation.risk_assessment.severity}</strong></div> : <div className="risk-summary unassessed"><span>DETERMINISTIC RISK</span><b>Not assessed</b></div>}</section>
+        <section className={`investigation-heading panel outcome-${investigation.outcome}`}>
+          <div className="finding-summary"><OutcomeBadge outcome={investigation.outcome} /><p>{investigation.summary}</p><div className="finding-caveats"><span>Synthetic FalkorDB data</span><span>Potential reachability is not proof of exploitation</span></div></div>
+          <div className="risk-summary">{investigation.risk_assessment ? <><span>DEMO RULES · {investigation.risk_assessment.rule_version}</span><b>{investigation.risk_assessment.score}<small>/100</small></b><strong>{investigation.risk_assessment.severity}</strong></> : <><span>DETERMINISTIC RISK</span><b>Not assessed</b></>}</div>
+          {investigation.risk_assessment?.factors?.length > 0 && <div className="risk-factors"><strong>Why it matters</strong><ul>{investigation.risk_assessment.factors.map((factor) => <li key={factor}>{factor}</li>)}</ul><small>Demonstration scoring only; not calibrated breach probability.</small></div>}
+        </section>
 
         <div className="primary-grid">
           <section className="graph-panel panel" aria-label="Graph path evidence">
-            <div className="panel-header"><div><p className="eyebrow">GRAPH EVIDENCE</p><h3>Modeled access topology</h3></div><span className="path-count">{paths.length} PATH{paths.length === 1 ? "" : "S"}</span></div>
+            <div className="panel-header"><div><p className="eyebrow">Graph evidence</p><h3>Modeled access topology</h3><p className="panel-description">Actual nodes and relationships returned for this investigation.</p></div><span className="path-count">{paths.length} {paths.length === 1 ? "path" : "paths"}</span></div>
             {paths.length > 0 ? <>
-              <div className="graph-canvas"><ReactFlow key={`${investigation.alert_id}-${investigation.investigation_id}`} nodes={nodes} edges={edges} fitView fitViewOptions={{ padding: 0.18, minZoom: 0.25, maxZoom: 1.15 }} nodesDraggable={false} nodesConnectable={false} proOptions={{ hideAttribution: true }}><Background color="#24415b" gap={20} /><Controls showInteractive={false} /></ReactFlow></div>
-              <div className="path-index" aria-label="All returned paths">{paths.map((path, index) => <div key={`path-${index}`}><b>PATH {String(index + 1).padStart(2, "0")}</b><span>{path.nodes.map((node) => node.id).join(" → ")}</span></div>)}</div>
+              <div className="graph-scroll"><div className="graph-canvas"><ReactFlow key={`${investigation.alert_id}-${investigation.investigation_id}`} nodes={nodes} edges={edges} fitView fitViewOptions={{ padding: 0.18, minZoom: 0.25, maxZoom: 1.15 }} nodesDraggable={false} nodesConnectable={false} proOptions={{ hideAttribution: true }}><Background color="#24415b" gap={24} /><Controls showInteractive={false} /></ReactFlow></div></div>
+              <div className="path-index" aria-label="All returned paths"><h4>Path sequence</h4>{paths.map((path, index) => <div key={`path-${index}`}><b>Path {String(index + 1).padStart(2, "0")}</b><span className="path-chain">{path.nodes.map((node, nodeIndex) => <span className="path-step" key={`${node.id}-${nodeIndex}`}><code>{node.id}</code>{path.edges[nodeIndex] && <em>{path.edges[nodeIndex].type.replaceAll("_", " ")}</em>}</span>)}</span></div>)}</div>
             </> : <div className={`graph-empty ${investigation.outcome}`}><strong>{investigation.outcome === "query_error" ? "Graph evidence could not be loaded" : investigation.outcome === "unknown_entity" ? "The target is not present in this graph" : investigation.outcome === "invalid_input" ? "The target input is invalid" : "No qualifying path was returned"}</strong><p>{investigation.outcome === "query_error" ? "No reachability conclusion can be drawn." : "This result describes the modeled query only; missing paths do not establish that a real environment is safe."}</p></div>}
           </section>
 
           <aside className="side-rail">
-            <section className="panel briefing-panel"><div className="panel-header"><div><p className="eyebrow">GEMINI + MCP</p><h3>Investigation briefing</h3></div>{agent?.grounding?.status && <span className="grounding-badge">{agent.grounding.status.toUpperCase()}</span>}</div>
-              {agentLoading && <p className="subtle">Gemini is reviewing the structured evidence…</p>}
-              {agent?.stale && <div className="stale-message"><strong>Briefing needs refresh</strong><p>The graph changed after this briefing. Generate a new explanation for the current route state.</p><button className="text-button" onClick={refreshAgentBriefing} disabled={agentLoading}>REFRESH BRIEFING</button></div>}
+            <section className="panel briefing-panel"><div className="panel-header"><div><p className="eyebrow">Gemini + MCP</p><h3>Investigation briefing</h3></div>{agent?.grounding?.status && <span className={`grounding-badge ${agent.grounding.status}`} title={agent.grounding.status === "grounded" ? "Gemini answer passed checks against canonical graph evidence." : "Gemini answer was not accepted; a deterministic canonical summary is shown."}>{agent.grounding.status.toUpperCase()}</span>}</div>
+              <p className="panel-description">{agent?.grounding?.status === "grounded" ? "Gemini answer passed checks against the canonical evidence." : agent?.grounding?.status === "fallback" ? "Deterministic evidence summary — Gemini answer not accepted." : "Optional explanation of the structured graph result."}</p>
+              {agentLoading && <p className="subtle" role="status">Gemini is reviewing the structured evidence…</p>}
+              {agent?.stale && <div className="stale-message"><strong>Previous briefing is stale</strong><p>The graph changed after this briefing. Generate a new explanation for the current route state.</p><button className="text-button" onClick={refreshAgentBriefing} disabled={agentLoading}>Refresh briefing</button></div>}
               {agent?.answer && !agent.stale && <div className="markdown-answer"><ReactMarkdown>{agent.answer}</ReactMarkdown></div>}
-              {agentError && <p className="agent-error">Gemini/MCP error: {agentError}</p>}
+              {agentError && <p className="agent-error" role="alert">AI briefing unavailable: {agentError} The structured graph result remains available.</p>}
               {!agentLoading && !agentError && !agent?.answer && !agent?.stale && <p className="subtle">The AI explanation is optional; the graph investigation remains available independently.</p>}
-              {agent?.grounding?.status === "fallback" && <small className="fallback-note">Deterministic summary from canonical investigation evidence.</small>}
+              {agent?.grounding?.status === "fallback" && <small className="fallback-note">Deterministic evidence summary — Gemini answer not accepted.</small>}
             </section>
 
-            {investigation.risk_assessment && <section className="panel risk-panel"><div className="panel-header"><div><p className="eyebrow">RULE BREAKDOWN</p><h3>Why this score</h3></div><b>{investigation.risk_assessment.score}<small>/100</small></b></div><div className="score-track"><i style={{ width: `${investigation.risk_assessment.score}%` }} /></div><ul>{investigation.risk_assessment.factors.map((factor) => <li key={factor}>{factor}</li>)}</ul><small className="risk-note">Demonstration rules; not a calibrated breach probability.</small></section>}
-
-            {selectedAlert.id === "BH-CONTAINMENT-4001" && <ContainmentLab containment={containment} history={history} busy={containmentBusy} onSimulate={simulateRoute} />}
+            {selectedAlert.id === "BH-CONTAINMENT-4001" && <ContainmentLab containment={containment} history={history} paths={containment?.before?.paths || paths} target={investigation.target} busy={containmentBusy} onSimulate={simulateRoute} />}
           </aside>
         </div>
 
-        <section className="detail-disclosures" aria-label="Investigation details">
-          <details><summary>Evidence, warnings and provenance</summary><div className="disclosure-content">{investigation.evidence.map((item, index) => <p className="evidence-line" key={`${index}-${item}`}>{item}</p>)}{investigation.warnings.map((warning, index) => <p className="warning-line" key={`${index}-${warning}`}>{warning}</p>)}<dl><dt>Data source</dt><dd>{investigation.data_source}</dd><dt>Dataset</dt><dd>{investigation.provenance?.dataset_version || "Not provided"}</dd><dt>Coverage</dt><dd>{investigation.provenance?.coverage || "Not provided"}</dd><dt>Target</dt><dd>{investigation.target?.type}: {investigation.target?.id}</dd></dl></div></details>
-          <details><summary>Graph query trace</summary><div className="disclosure-content">{investigation.trace?.map((trace, index) => <TraceRow trace={trace} index={index} key={`${trace.tool_name}-${index}`} />)}</div></details>
-          <details><summary>Agent MCP tool calls</summary><div className="disclosure-content">{agent?.trace?.length ? agent.trace.map((trace, index) => <TraceRow trace={trace} index={index} key={`${trace.tool_name}-${index}`} />) : <p className="subtle">MCP call details appear here after Gemini completes a tool-assisted briefing.</p>}</div></details>
+        <section className="investigation-details panel" aria-label="Investigation details">
+          <div className="panel-header"><div><p className="eyebrow">Supporting evidence</p><h3>Investigation details</h3></div><span className="panel-description">Expand a section to inspect sources, graph queries, and agent tool calls.</span></div>
+          <details><summary>Evidence &amp; provenance</summary><div className="disclosure-content">
+            {investigation.evidence.length ? <ul className="evidence-list">{investigation.evidence.map((item, index) => <li className="evidence-line" key={`${index}-${item}`}>{item}</li>)}</ul> : <p className="empty-detail">No additional evidence items were returned.</p>}
+            <div className="relationship-evidence"><h4>Returned relationships and properties</h4>{investigation.paths.flatMap((path, pathIndex) => path.edges.map((edge, edgeIndex) => <article className="relationship-row" key={`${pathIndex}-${edgeIndex}-${edge.source}-${edge.target}`}><strong>{edge.source} <span>{edge.type}</span> {edge.target}</strong>{Object.keys(edge.properties || {}).length > 0 ? <code>{JSON.stringify(edge.properties)}</code> : <small>No relationship properties were returned.</small>}</article>))}{investigation.paths.every((path) => path.edges.length === 0) && <p className="empty-detail">This result contains no traversed relationships.</p>}</div>
+            {investigation.warnings.length > 0 && <div className="warning-list"><h4>Interpretation limits</h4>{investigation.warnings.map((warning, index) => <p className="warning-line" key={`${index}-${warning}`}>{warning}</p>)}</div>}
+            <dl className="provenance-grid"><dt>Data source</dt><dd>{investigation.data_source}</dd><dt>Dataset</dt><dd>{investigation.provenance?.dataset_version || "Not provided"}</dd><dt>Coverage</dt><dd>{investigation.provenance?.coverage || "Not provided"}</dd><dt>Target</dt><dd>{investigation.target?.type}: {investigation.target?.id}</dd><dt>Risk rule</dt><dd>{investigation.risk_assessment?.rule_version || "Not assessed"}</dd></dl>
+          </div></details>
+          <details><summary>Graph query trace <span>{investigation.trace?.length || 0} queries</span></summary><div className="disclosure-content">{investigation.trace?.length ? investigation.trace.map((trace, index) => <TraceRow trace={trace} index={index} key={`${trace.tool_name}-${index}`} />) : <p className="empty-detail">No graph-query trace was returned.</p>}</div></details>
+          <details><summary>Agent tool calls <span>{agent?.trace?.length || 0} calls</span></summary><div className="disclosure-content">{agent?.trace?.length ? agent.trace.map((trace, index) => <TraceRow trace={trace} index={index} key={`${trace.tool_name}-${index}`} routeStatuses={trace.tool_name === "get_containment_route_statuses" ? containment?.routes : null} />) : <p className="empty-detail">MCP call details appear here after a Gemini tool-assisted briefing. This trace is separate from the graph-query trace above.</p>}</div></details>
         </section>
       </>}
     </main>
   </div>;
 }
 
-function TraceRow({ trace, index }) {
-  const routeStatuses = trace.route_statuses || [];
-  const evidence = routeStatuses.length
-    ? routeStatuses.map(({ route_id: routeId, containment_status: status }) => `${routeId}: ${status}`).join(" · ")
-    : (trace.evidence || []).join(", ") || "No entity IDs returned";
-  return <div className="trace-row"><b>{String(index + 1).padStart(2, "0")}</b><div><strong>{trace.tool_name}</strong><code>{Object.entries(trace.input || {}).map(([key, value]) => `${key}: ${value}`).join(" · ")}</code><small>{evidence}</small></div><span className={`trace-status ${trace.result}`}>{String(trace.result).replaceAll("_", " ")}</span><span>{trace.result_count} rows · {trace.duration_ms} ms</span></div>;
+function TraceRow({ trace, index, routeStatuses = null }) {
+  const isRouteTool = trace.tool_name === "get_containment_route_statuses";
+  const routeEvidence = (routeStatuses || []).map(({ route_id: routeId, containment_status: status }) => `${routeId}: ${status}`).join(" · ");
+  const evidence = routeEvidence
+    ? `Routes: ${routeEvidence}`
+    : (trace.evidence || []).length
+      ? `Entities: ${trace.evidence.join(", ")}`
+      : isRouteTool
+        ? "No route statuses returned by the containment API."
+        : "No entity IDs returned by this tool.";
+  const inputs = Object.entries(trace.input || {});
+  return <article className="trace-row">
+    <span className="trace-number">{String(index + 1).padStart(2, "0")}</span>
+    <div className="trace-main"><strong>{trace.tool_name}</strong>
+      {inputs.length > 0 && <div className="trace-inputs">{inputs.map(([key, value]) => <span key={key}><b>{key}</b><code>{String(value)}</code></span>)}</div>}
+      <p className="trace-evidence">{evidence}</p>
+    </div>
+    <span className={`trace-status ${trace.result}`}>{String(trace.result || "unknown").replaceAll("_", " ")}</span>
+    <span className="trace-measurement">{trace.result_count ?? 0} results · {trace.duration_ms ?? 0} ms</span>
+  </article>;
 }
 
-function ContainmentLab({ containment, history, busy, onSimulate }) {
+function ContainmentLab({ containment, history, paths, target, busy, onSimulate }) {
   const routes = containment?.routes || [];
   const verification = containment?.verification_outcome;
-  return <section className="panel containment-panel"><div className="panel-header"><div><p className="eyebrow">SYNTHETIC SIMULATION</p><h3>Containment verification</h3></div><span className={`route-count ${routes.length && routes.some((route) => route.containment_status === "ACTIVE") ? "active" : ""}`}>{routes.filter((route) => route.containment_status === "ACTIVE").length} ACTIVE</span></div>
-    <p className="subtle">Human confirmed graph-state simulation. No live session or cloud resource is changed.</p>
-    {containment?.error && <p className="agent-error">Route status query failed: {containment.error}</p>}
-    {verification && <div className={`verification-result ${verification}`}><small>POST-ACTION GRAPH QUERY</small><strong>{verification.replaceAll("_", " ")}</strong>{containment.action && <span>{containment.action.route_id}: {containment.action.previous_status} → {containment.action.new_status} · {containment.action.action_id}</span>}{containment.verification_error && <em>{containment.verification_error}</em>}</div>}
-    <div className="route-list">{routes.map((route) => <div className="route-row" key={route.route_id}><span><b>{route.route_id}</b><small>{route.containment_status}</small></span>{route.containment_status !== "BLOCKED" && <button className="secondary-button" disabled={busy} onClick={() => onSimulate(route.route_id)}>{busy ? "VERIFYING…" : "SIMULATE BLOCK"}</button>}</div>)}</div>
-    {history.length > 0 && <details className="audit-details"><summary>Action audit · {history.length}</summary>{history.slice(0, 5).map((entry) => <div className="audit-row" key={entry.action_id}><code>{entry.action_id}</code><span>{entry.route_id}: {entry.previous_status} → {entry.new_status}</span><strong>{entry.verification_outcome?.replaceAll("_", " ")}</strong><small>{entry.timestamp}</small></div>)}</details>}
+  const routesAvailable = containment?.status === "routes_found" || routes.length > 0;
+  const routeContext = (routeId) => {
+    const routePath = paths.find((path) => path.edges.some((edge) => edge.type === "HAS_SESSION" && edge.properties?.route_id === routeId));
+    if (!routePath) return "No active path for this route in the current graph result.";
+    const destination = routePath.nodes.at(-1);
+    return `${target?.id || routePath.nodes[0]?.id} → ${destination?.label || destination?.id} (${destination?.id})`;
+  };
+  const verificationLabel = {
+    alternative_path_remains: "Another modeled route is still reachable.",
+    no_qualifying_path_in_modeled_graph: "No qualifying route remains in this modeled graph.",
+    verification_failed: "The post-action graph verification failed; containment is unverified.",
+  }[verification] || verification?.replaceAll("_", " ");
+  return <section className="panel containment-panel">
+    <div className="panel-header"><div><p className="eyebrow">Synthetic-only simulation</p><h3>Containment lab</h3></div>{routesAvailable && <span className="route-count">{routes.filter((route) => route.containment_status === "ACTIVE").length} active · {routes.filter((route) => route.containment_status === "BLOCKED").length} blocked</span>}</div>
+    <p className="panel-description">Simulated route-state change in FalkorDB only. No real session or cloud resource is modified. Confirm before each action.</p>
+    {containment?.error && <p className="agent-error" role="alert">Route status query failed: {containment.error}</p>}
+    {!containment && <p className="empty-detail">Route statuses are loading or have not been queried.</p>}
+    {verification && <div className={`verification-result ${verification}`} role="status"><small>Fresh post-action graph verification</small><strong>{verificationLabel}</strong>{containment.action && <><span>Action: {containment.action.action_id} · {containment.action.route_id}</span><span>Status: {containment.action.previous_status} → {containment.action.new_status}</span><time dateTime={containment.action.timestamp}>{new Date(containment.action.timestamp).toLocaleString()}</time></>}{containment.verification_error && <em>{containment.verification_error}</em>}</div>}
+    {routesAvailable && <div className="route-list" aria-label="Synthetic session routes">{routes.map((route) => {
+      const active = route.containment_status === "ACTIVE";
+      return <article className="route-card" key={route.route_id}>
+        <div className="route-heading"><strong>{route.route_id}</strong><span className={`route-state ${active ? "active" : "blocked"}`}>{route.containment_status}</span></div>
+        <p className="route-context">{routeContext(route.route_id)}</p>
+        {active && <button className="secondary-button" disabled={busy} onClick={() => onSimulate(route.route_id)} aria-label={`Simulate blocking ${route.route_id} route`}>{busy ? "Verifying…" : "Simulate block"}</button>}
+      </article>;
+    })}</div>}
+    {routesAvailable && routes.length === 0 && <p className="empty-detail">The API returned no containment routes.</p>}
+    {history.length > 0 && <details className="audit-details"><summary>Action audit <span>{history.length} actions</span></summary><div className="audit-list">{history.slice(0, 5).map((entry) => <article className="audit-row" key={entry.action_id}><strong>{entry.route_id}: {entry.previous_status} → {entry.new_status}</strong><span>{entry.verification_outcome?.replaceAll("_", " ")}</span><code>{entry.action_id}</code><time dateTime={entry.timestamp}>{new Date(entry.timestamp).toLocaleString()}</time></article>)}</div></details>}
+    <p className="seed-note">To restore the demo baseline with both routes active, rerun the Scenario 4 seed from the backend terminal.</p>
   </section>;
 }
