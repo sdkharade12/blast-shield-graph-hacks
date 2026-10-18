@@ -11,8 +11,7 @@ from app.schemas import InvestigationResponse
 from app.services import graph_service
 
 
-# This catalog contains routing metadata only. Investigation facts are always
-# queried from the synthetic FalkorDB graph through graph_service.
+# The catalog routes alerts; investigation facts come from FalkorDB.
 ALERT_CATALOG: tuple[dict[str, str], ...] = (
     {
         "id": "BH-1042",
@@ -109,11 +108,9 @@ def find_alert(alert_id: str) -> dict[str, str] | None:
 def _normalize_path(path: dict[str, Any]) -> dict[str, Any]:
     nodes = []
     for node in path.get("nodes", []):
-        # Member 1's `label` is the graph label/type, not a display name.
         entity_type = str(node.get("type") or node.get("label") or "Entity")
         entity_id = str(node.get("id") or "unknown")
-        # Older path providers placed the node type in `label`; newer query
-        # maps return a separate display label and type.
+        # Older providers used `label` for the entity type.
         display_label = node.get("label") if node.get("type") else entity_id
         nodes.append({"id": entity_id, "label": str(display_label or entity_id), "type": entity_type})
     edges = []
@@ -267,8 +264,7 @@ def simulate_containment(alert_id: str, route_id: str) -> dict[str, Any] | None:
     if mutation["status"] not in {"contained", "already_blocked"}:
         return mutation
 
-    # The outcome is determined from a fresh graph investigation after the
-    # state change, not just from the route relationship update.
+    # Verify containment with a fresh graph query.
     after = graph_service.find_remaining_containment_paths(identity_id)
     routes = graph_service.get_containment_route_statuses(identity_id)
     if after["status"] == "query_error" or routes["status"] == "query_error":

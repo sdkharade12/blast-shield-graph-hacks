@@ -266,7 +266,6 @@ class IntegrationTests(unittest.TestCase):
 
     def test_mcp_records_actual_tool_calls_and_trace_can_be_read(self):
         with patch.object(mcp_server, "run_investigation", return_value=None):
-            # A known alert dispatch that fails to produce a canonical result is query_error.
             response = mcp_server.investigate_alert("BH-1042")
         trace = mcp_server.get_tool_trace()["items"]
         self.assertEqual(response["status"], "query_error")

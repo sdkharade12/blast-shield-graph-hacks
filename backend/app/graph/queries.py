@@ -1,9 +1,7 @@
 """Predefined Cypher queries used by BlastShield."""
 
 
-# ============================================================
-# SCENARIO 1: IDENTITY INVESTIGATION
-# ============================================================
+# Identity investigation
 
 GET_IDENTITY_QUERY = """
 MATCH (i:Identity {id: $identity_id})
@@ -49,9 +47,7 @@ RETURN
 """
 
 
-# ============================================================
-# SCENARIO 2: EXCESSIVE IAM PERMISSIONS
-# ============================================================
+# Excessive IAM permissions
 
 GET_IAM_ROLE_QUERY = """
 MATCH (r:IAMRole {id: $role_id})
@@ -99,9 +95,7 @@ RETURN
 """
 
 
-# ============================================================
-# SCENARIO 3: EXPOSED WORKLOAD AND BLAST RADIUS
-# ============================================================
+# Exposed workload blast radius
 
 GET_WORKLOAD_QUERY = """
 MATCH (w:Workload {id: $workload_id})
@@ -153,9 +147,7 @@ RETURN
 """
 
 
-# ============================================================
-# SCENARIO 4: CONTAINMENT VERIFICATION
-# ============================================================
+# Containment verification
 
 GET_CONTAINMENT_IDENTITY_QUERY = """
 MATCH (i:Identity {id: $identity_id})
@@ -236,9 +228,7 @@ ORDER BY route.route_id
 """
 
 
-# ============================================================
-# BOUNDED GENERIC ACCESS-PATH SUPPORT
-# ============================================================
+# Bounded access-path support
 
 # This is deliberately a reviewed allow-list. The shortest-path tool does not
 # traverse arbitrary graph relationships or accept Cypher from the caller.

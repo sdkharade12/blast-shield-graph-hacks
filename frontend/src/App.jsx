@@ -269,7 +269,7 @@ function Workspace({ initialScenarioId, onNavigate }) {
         }
       }
       setInvestigating(false);
-      // Keep structured findings on screen while the optional Gemini request runs.
+      // Keep graph findings visible while Gemini responds.
       void runAgentBriefing(alert, version, controller.signal);
     } catch (error) {
       if (error.name !== "AbortError" && version === requestVersion.current) {
@@ -306,7 +306,7 @@ function Workspace({ initialScenarioId, onNavigate }) {
     setResponseCurrentRoutes(null);
     setGraphView("after");
     cacheCase(alert.id, { preActionSnapshot: null, responseRun: null, responseCurrentRoutes: null });
-    // Immediately invalidate the old graph view and briefing; they describe pre-action state.
+    // Clear stale pre-action evidence before starting a response run.
     setInvestigation(null);
     cacheCase(alert.id, { investigation: null, agent: null });
     setAgent(null);
@@ -394,7 +394,7 @@ function Workspace({ initialScenarioId, onNavigate }) {
             setResponseCurrentRoutes(statuses);
           }
         } catch {
-          // Keep the exact per-action verification from the response; do not infer a final route state.
+          // Keep the returned verification; don't infer a route state.
         }
       }
     } catch (error) {

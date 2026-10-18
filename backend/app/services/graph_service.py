@@ -23,9 +23,7 @@ logger = logging.getLogger(__name__)
 MAX_ACCESS_PATH_HOPS = 6
 
 
-# ============================================================
-# SHARED GRAPH INVESTIGATION HELPERS
-# ============================================================
+# Shared investigation helpers
 
 def _format_paths(
     query_result: list,
@@ -105,7 +103,6 @@ def _investigate_paths(
     try:
         with graph_connection() as graph:
 
-            # Step 1: Verify the entity exists.
             entity_result = graph.ro_query(
                 existence_query,
                 {parameter_name: entity_id},
@@ -120,7 +117,6 @@ def _investigate_paths(
                     "error": None,
                 }
 
-            # Step 2: Retrieve qualifying paths.
             query_result = graph.ro_query(
                 path_query,
                 {parameter_name: entity_id},
@@ -135,7 +131,6 @@ def _investigate_paths(
                     "error": None,
                 }
 
-            # Step 3: Format database results.
             paths, evidence = _format_paths(query_result)
 
             return {
@@ -162,9 +157,7 @@ def _investigate_paths(
         }
 
 
-# ============================================================
-# SCENARIO 1: IDENTITY INVESTIGATION
-# ============================================================
+# Identity investigation
 
 def find_sensitive_resource_paths(
     identity_id: str,
@@ -184,9 +177,7 @@ def find_sensitive_resource_paths(
     )
 
 
-# ============================================================
-# SCENARIO 2: EXCESSIVE IAM PERMISSIONS
-# ============================================================
+# Excessive IAM permissions
 
 def find_excessive_permission_paths(
     role_id: str,
@@ -206,9 +197,7 @@ def find_excessive_permission_paths(
     )
 
 
-# ============================================================
-# SCENARIO 3: EXPOSED WORKLOAD AND BLAST RADIUS
-# ============================================================
+# Exposed workload blast radius
 
 def find_workload_blast_radius(
     workload_id: str,
@@ -230,9 +219,7 @@ def find_workload_blast_radius(
     )
 
 
-# ============================================================
-# SCENARIO 4: FIND REMAINING ACCESS PATHS
-# ============================================================
+# Remaining containment paths
 
 def find_remaining_containment_paths(
     identity_id: str,
@@ -254,9 +241,7 @@ def find_remaining_containment_paths(
     )
 
 
-# ============================================================
-# SCENARIO 4: SIMULATE CONTAINMENT
-# ============================================================
+# Synthetic containment simulation
 
 def simulate_containment(
     identity_id: str,
@@ -272,7 +257,6 @@ def simulate_containment(
     that is already BLOCKED does not change its state again.
     """
 
-    # Validate input before contacting FalkorDB.
     if (
         not isinstance(identity_id, str)
         or not identity_id.strip()
@@ -293,7 +277,6 @@ def simulate_containment(
     try:
         with graph_connection() as graph:
 
-            # Step 1: Confirm that the identity exists.
             identity_result = graph.ro_query(
                 GET_CONTAINMENT_IDENTITY_QUERY,
                 {"identity_id": identity_id},
@@ -308,7 +291,6 @@ def simulate_containment(
                     "error": None,
                 }
 
-            # Step 2: Retrieve the identity's known routes.
             route_rows = graph.ro_query(
                 GET_CONTAINMENT_ROUTE_STATUS_QUERY,
                 {"identity_id": identity_id},
@@ -319,7 +301,6 @@ def simulate_containment(
                 for row in route_rows
             }
 
-            # Step 3: Confirm the selected route exists.
             if route_id not in route_statuses:
                 return {
                     "status": "unknown_route",
@@ -329,7 +310,6 @@ def simulate_containment(
                     "error": None,
                 }
 
-            # Step 4: Handle repeated containment requests safely.
             if route_statuses[route_id] == "BLOCKED":
                 return {
                     "status": "already_blocked",
@@ -339,7 +319,6 @@ def simulate_containment(
                     "error": None,
                 }
 
-            # Step 5: Update the synthetic route.
             update_result = graph.query(
                 SIMULATE_CONTAINMENT_QUERY,
                 {
@@ -396,9 +375,7 @@ def simulate_containment(
         }
 
 
-# ============================================================
-# SCENARIO 4: VERIFY ROUTE STATUSES
-# ============================================================
+# Containment route status
 
 def get_containment_route_statuses(
     identity_id: str,
@@ -421,7 +398,6 @@ def get_containment_route_statuses(
     try:
         with graph_connection() as graph:
 
-            # Verify the identity exists first.
             identity_result = graph.ro_query(
                 GET_CONTAINMENT_IDENTITY_QUERY,
                 {"identity_id": identity_id},
@@ -435,7 +411,6 @@ def get_containment_route_statuses(
                     "error": None,
                 }
 
-            # Retrieve all route statuses.
             route_rows = graph.ro_query(
                 GET_CONTAINMENT_ROUTE_STATUS_QUERY,
                 {"identity_id": identity_id},
@@ -470,9 +445,7 @@ def get_containment_route_statuses(
         }
 
 
-# ============================================================
-# BOUNDED SHORTEST ACCESS PATH (MCP TOOL)
-# ============================================================
+# Bounded shortest access path
 
 def find_shortest_access_path(source_id: str, target_id: str, max_hops: int = MAX_ACCESS_PATH_HOPS) -> dict[str, Any]:
     """Return the shortest supported directed access path in the graph.

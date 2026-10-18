@@ -57,8 +57,7 @@ def _traced(tool_function):
             "duration_ms": round((perf_counter() - started) * 1000),
             "result_count": _result_count(result),
             "evidence": list(dict.fromkeys(entity_ids)),
-            # Route rows identify graph relationships rather than entities.
-            # Preserve their useful state for trace rendering.
+            # Keep route states available to the trace renderer.
             "route_statuses": route_statuses,
         }
         TOOL_TRACE.append(entry)
@@ -99,8 +98,7 @@ def investigate_alert(alert_id: str) -> dict[str, Any]:
     result = _as_dict(run_investigation(alert_id))
     CANONICAL_INVESTIGATION = result
     return {
-        # Preserve the canonical investigation outcome. A response object is
-        # not automatically a successful security finding.
+        # Preserve the canonical outcome; a response is not automatically a finding.
         "status": result["outcome"] if result else "query_error",
         "investigation": result,
         "data_source": "synthetic_falkordb",

@@ -20,8 +20,6 @@ async def main():
             "GEMINI_API_KEY is missing from this terminal."
         )
 
-    # Start our MCP server as a subprocess.
-    # Run this script from the backend directory.
     server_params = StdioServerParameters(
         command=sys.executable,
         args=["-m", "app.mcp.server"],
@@ -64,7 +62,6 @@ async def main():
                 print("\nGemini's investigation:\n")
                 print(response.text or "(No text returned)")
 
-                # Show function-call history when provided by the SDK.
                 history = (
                     getattr(
                         response,

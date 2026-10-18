@@ -1,13 +1,10 @@
 # BlastShield
-
 BlastShield is a graph-native cloud-security investigation demo for the FalkorDB Graph Hacks Track 01. It turns a synthetic cloud access graph into explainable investigation evidence: directed paths, affected assets, deterministic risk factors, bounded MCP tools, and simulated containment verification. It does not connect to a cloud tenant, detect real compromise, or remediate real resources.
 
 ## 60-second pitch
-
 Cloud incidents are difficult to triage when identities, sessions, workloads, roles, and data are spread across disconnected tools. BlastShield models those relationships as a graph and asks a concrete question: “what represented access route reaches a critical asset, and what remains if we block one route?” The dashboard shows the answer as traversable evidence—not an opaque score—while preserving the limits of the synthetic model. A reviewer can switch among four cases, inspect every node and relationship, examine actual MCP calls, and safely simulate route blocks.
 
 ## Architecture
-
 ```text
 React investigation dashboard
   ├─ FastAPI: alert catalog, canonical investigation, health, containment
@@ -20,19 +17,17 @@ React investigation dashboard
 The structured investigation endpoint and optional Gemini investigation endpoint are separate. The graph service owns canonical outcomes and evidence; the read-only model can explain that evidence but cannot redefine it. If grounding checks fail or Gemini is unavailable, the agent path falls back to the canonical investigation summary. Autonomous response is a separate opt-in endpoint: it requires explicit confirmation, is bounded to at most three graph-derived actions, and gives Gemini no mutation tool. The controller validates each model choice, invokes a separate response-only MCP capability, and re-queries the graph after every action. Writes affect synthetic FalkorDB response state only. Health reports API and database status separately.
 
 ## Track 01 evidence scorecard
-
-| Graph-agent principle | Current implementation | Evidence still required for a live submission demo |
+| Graph-agent principle | Current implementation | What to demonstrate or disclose |
 | --- | --- | --- |
-| Multi-hop graph reasoning | Canonical investigations and bounded graph traversal return ordered paths. | Show a depth-1 miss and depth-4 hit for `auditor_02` → `analytics-cache`; also show the four-to-five-hop change for `staging-report`. |
-| Fixed tools, not model-generated Cypher | MCP exposes a fixed catalogue of typed operations; Cypher is reviewed and parameterized by the backend. | Run unknown-entity and known-but-disconnected examples; show scenario-specific tool traces. |
-| Native graph algorithms as tools | **Not implemented.** `find_shortest_access_path` is bounded Cypher traversal, not `algo.SPpaths`. | The installed local image/version was not verified for the procedure; do not describe this traversal as native. |
-| Persistent graph memory | **Not implemented.** Findings and action history are not durable across API restarts; containment audit history is in-process only. | Optional future work, especially relevant to Track 02; keep fresh graph queries canonical if added later. |
-| Answers carry graph evidence | Structured results carry graph paths/evidence; response UI keeps a historical before snapshot, ordered actions, and a separate fresh after query. | Verify the complete flow in a live browser and show actual returned evidence, not a static illustration. |
+| Multi-hop graph reasoning | Canonical investigations and bounded graph traversal return ordered paths. | Demonstrate a shallow miss and deeper hit for `auditor_02` → `analytics-cache`, plus the four-to-five-hop change for `staging-report`. |
+| Fixed tools, not model-generated Cypher | MCP exposes a fixed catalogue of typed operations; Cypher is reviewed and parameterized by the backend. | Show an unknown entity, a known-but-disconnected pair, and actual tool traces. |
+| Native graph algorithms as tools | **Not implemented.** `find_shortest_access_path` is bounded Cypher traversal, not `algo.SPpaths`. | Be explicit that the current implementation uses bounded Cypher traversal; do not claim a native algorithm integration. |
+| Persistent graph memory | **Not implemented.** Findings and action history are not durable across API restarts; containment audit history is in-process only. | Disclose as a limitation; persistent memory is not part of the current implementation. |
+| Answers carry graph evidence | Structured results carry graph paths/evidence; response UI keeps a historical before snapshot, ordered actions, and a separate fresh after query. | Show actual path evidence, the historical before snapshot, action sequence, and separate fresh after query. |
 
 The graph is central to the investigation and response: paths, supported action candidates, and post-action verification all come from FalkorDB-backed queries. Removing FalkorDB removes the product's canonical security evidence and ability to verify its simulated response; the dashboard is not merely a visualization over ordinary records.
 
 ## Scenarios and seeded targets
-
 | Scenario | Alert | Target | What the graph query demonstrates |
 | --- | --- | --- | --- |
 | Identity access | `BH-1042` | `developer_07` (`Identity`) | Represented route(s) to critical data assets |
@@ -43,7 +38,6 @@ The graph is central to the investigation and response: paths, supported action 
 Seed data is synthetic. The supplemental audit fixture is intentionally disconnected from canonical alert targets. It includes a direct audit-cache route and a longer role-assumption branch, plus an audit-report route for comparing shallow and deeper bounded traversals. Seed scripts use graph `MERGE` operations and can be rerun; they do not clear the graph. Counts can vary with existing graph data.
 
 ## Graph and evidence model
-
 Core labels are `Identity`, `Session`, `Workload`, `IAMRole`, and `DataAsset`. Investigated access relationships are `HAS_SESSION`, `CAN_ACCESS`, `RUNS_AS`, `CAN_ASSUME`, and `CAN_READ`. Relationship properties carry scenario facts such as route ID, containment status, permission classification, scope, and sensitivity. Manual Scenario 4 containment updates only the selected synthetic `HAS_SESSION` route’s `containment_status`. Autonomous response uses separate `response_status` properties for session and IAM edges, and `response_status='ISOLATED'` for workload response state; it does not overwrite the workload's observed `status='RUNNING'`.
 
 Canonical outcomes distinguish `path_found`, `no_path_in_graph`, `unknown_entity`, `invalid_input`, and `query_error`; an unknown alert is separately reported as `unknown_alert`. “No path” means no qualifying path was found by the modeled query, not proof of safety. A path is represented reachability, not proof of exploitation. The IAM scenario consumes the graph’s existing `EXCESSIVE` classification; it does not independently compute least privilege.
@@ -51,14 +45,14 @@ Canonical outcomes distinguish `path_found`, `no_path_in_graph`, `unknown_entity
 `find_shortest_access_path` is a parameterized MCP tool. It accepts source and target IDs plus an optional `max_hops` (integer 1–6), traverses only the five relationship types above, excludes blocked session routes, and returns the ordered nodes, edges, and hop count. FalkorDB variable-length bounds are selected from six prebuilt query templates; caller values are validated and never interpolated into Cypher. A no-path result includes the selected traversal depth and does not mean the target is safe. This is a bounded Cypher traversal—not a FalkorDB native graph-algorithm procedure—and it does not accept caller-provided Cypher. Investigation traces record actual tool names, inputs, outcomes, durations, and result counts. The deterministic `demo-rules-v1` risk score is transparent demonstration logic, not calibrated breach probability.
 
 ## Reviewed query and MCP tool catalogue
-
 Read operations use reviewed, parameterized Cypher only; the model never writes or supplies Cypher. The shortest-path query is the bounded traversal described above:
 
 ```cypher
 MATCH p = (source {id: $source_id})-[*1..6]->(target {id: $target_id})
 WHERE all(rel IN relationships(p) WHERE type(rel) IN
   ['HAS_SESSION', 'CAN_ACCESS', 'RUNS_AS', 'CAN_ASSUME', 'CAN_READ']
-  AND (type(rel) <> 'HAS_SESSION' OR coalesce(rel.containment_status, 'ACTIVE') = 'ACTIVE'))
+  AND (type(rel) <> 'HAS_SESSION' OR coalesce(rel.containment_status, 'ACTIVE') = 'ACTIVE')
+  AND coalesce(rel.response_status, 'ACTIVE') <> 'BLOCKED')
 RETURN
   [node IN nodes(p) | {
     id: node.id,
@@ -77,14 +71,17 @@ ORDER BY hop_count ASC LIMIT 1
 
 The MCP catalogue is fixed: `investigate_alert(alert_id)` returns a canonical investigation; `get_blast_radius(alert_id)` returns path-derived workload/role/asset nodes; `find_shortest_access_path(source_id, target_id, max_hops=6)` returns a bounded directed path or a distinct unknown/no-path/error state; and `get_containment_route_statuses(alert_id)` returns `{route_id, containment_status}` rows only for the containment scenario. Route-status traces render route IDs and states, not entity-ID placeholders.
 
-The supplementary audit fixture demonstrates bounded traversal without becoming a fifth alert: `auditor_02 → sess_auditor_02 → audit-reporter-02 → audit-readonly-role → staging-observer-role → staging-report` is five hops and includes `CAN_ASSUME`. A four-hop traversal reports no qualifying path to `staging-report`; a five-hop traversal returns the modeled route. The audit cache also has a direct four-hop path and a longer alternative via the assumed staging role. All fixture relationships are synthetic and remain separate from the four canonical alert targets.
+The supplementary audit fixture demonstrates bounded traversal without becoming a fifth alert: `auditor_02 → sess_auditor_02 → audit-reporter-02 → audit-readonly-role → staging-observer-role → staging-report` is five hops and includes `CAN_ASSUME`. A four-hop traversal reports no qualifying path to `staging-report`; a five-hop traversal returns the modeled route. The audit cache also has a four-hop path and a longer alternative via the assumed staging role. All fixture relationships are synthetic and remain separate from the four canonical alert targets.
 
 ## Run locally
 
-The project can live at any path. In the commands below, replace `C:\path\to\blast-shield-graph-hacks` with the directory containing this README. Ensure the Docker container exposes port 6379 and install dependencies once before the demo.
+Prerequisites: Docker Desktop, Python 3.11 or newer, and Node.js with npm. The project can live at any path. Replace `C:\path\to\blast-shield-graph-hacks` with the directory containing this README. These commands use PowerShell on Windows.
+
+### One-time Python and frontend setup
+
+Run from the repository root:
 
 ```powershell
-# One-time setup from the repository root
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install -r requirements.txt
@@ -93,30 +90,43 @@ npm install
 cd ..
 ```
 
+### Start FalkorDB
+
+For a first-time setup, create the container once:
+
 ```powershell
-# Terminal 1 — database, seeds, then API
+docker run -d --name blastshield-db -p 6379:6379 falkordb/falkordb:latest
+```
+
+For later sessions, if the container exists but is stopped, run `docker start blastshield-db`. If it is already running, leave it running. Before starting the API, verify that port 6379 is reachable:
+
+```powershell
+Test-NetConnection localhost -Port 6379
+```
+
+### Terminal 1 — seed the graph and start the API
+
+```powershell
 Set-Location "C:\path\to\blast-shield-graph-hacks"
 .\.venv\Scripts\Activate.ps1
-docker start blastshield-db
-Test-NetConnection localhost -Port 6379
 cd backend
 python -m app.graph.seed
 python -m app.graph.scenario4_seed
 python -m uvicorn app.main:app --reload
 ```
 
+### Terminal 2 — start the dashboard
+
 ```powershell
-# Terminal 2 — dashboard
 Set-Location "C:\path\to\blast-shield-graph-hacks\frontend"
 npm run dev
 ```
 
 The dashboard expects the API on `http://localhost:8000` and Vite on `http://localhost:5173`. The optional agent briefing needs a Gemini key in the repository-root `.env` as `GEMINI_API_KEY=...`; never commit or print the value. Without a configured key, the graph-backed structured investigation and dashboard remain usable and the agent panel reports its unavailable/fallback state.
 
-To reset only the demo containment routes to `ACTIVE`, stop the API if needed and rerun `python -m app.graph.scenario4_seed`. This changes those synthetic route properties; it does not reset or delete the graph volume. For a presentation, seed before starting the API so all fixture data is present.
+To reset only the demo containment routes to `ACTIVE`, stop the API if needed and rerun `python -m app.graph.scenario4_seed` from the `backend` directory. This changes those synthetic route properties; it does not reset or delete the graph volume. For a presentation, seed before starting the API so all fixture data is present.
 
 ## Judge demo flow
-
 1. Open the identity case and investigate. Expand evidence to follow the access chain to critical data; point out the result outcome and deterministic risk factors.
 2. Switch to excessive IAM and public workload, then return to identity. Results are cached independently per case, so changing scenarios does not turn the earlier result blank or overwrite it.
 3. Show graph provenance, the bounded shortest-path result, and the MCP trace. The trace is measured tool activity, not a mock transcript.
@@ -127,7 +137,6 @@ To reset only the demo containment routes to `ACTIVE`, stop the API if needed an
 8. For the autonomous response demo, investigate a scenario with a returned path, choose **Review and confirm response run**, and confirm once. Show the decision trace and fresh post-action investigation. The run stops when no modeled path remains, Gemini cannot make a validated choice, verification fails, or the three-action limit is reached. Rerun `python -m app.graph.seed` to reset Scenarios 1–3 response properties and `python -m app.graph.scenario4_seed` to reset Scenario 4 routes.
 
 ## API endpoints
-
 - `GET /api/health` — API and graph database status, plus synthetic mode.
 - `GET /api/alerts` — canonical scenario catalog and graph target IDs.
 - `POST /api/investigations` — structured canonical graph result.
@@ -139,7 +148,6 @@ To reset only the demo containment routes to `ACTIVE`, stop the API if needed an
 - `GET /api/containment/{alert_id}/history` — in-process action audit history (cleared on API restart).
 
 ## Tests and verification
-
 Contract/unit tests use mocks and do not need Docker:
 
 ```powershell
@@ -164,9 +172,7 @@ npm run build
 ```
 
 ## Boundaries
-
 This is a hackathon prototype over synthetic data. It is not connected to AWS, Azure, GCP, an identity provider, or production telemetry. It does not prove suspicious login activity, compromise, exploitability, or safety. Containment is a reversible demo mutation in FalkorDB only. Do not enter production secrets or use the tool as an authorization/remediation system. AI-generated explanations are optional and are checked against canonical graph evidence; all outputs should be reviewed by a human.
 
 ## AI-assisted development disclosure
-
-OpenAI Codex was used as an AI coding assistant during development. The team remains responsible for reviewing, testing, understanding, and explaining the submitted implementation. Gemini is an optional runtime explanation/decision component; its output is constrained by the fixed MCP tools and canonical graph evidence, and fallback output is identified separately.
+AI coding assistants were used during development. The team remains responsible for reviewing, testing, understanding, and explaining the submitted implementation. Gemini is an optional runtime explanation and decision component; its output is constrained by the fixed MCP tools and canonical graph evidence, and fallback output is identified separately.

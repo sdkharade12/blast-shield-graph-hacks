@@ -128,10 +128,7 @@ async def run_autonomous_response(alert_id: str, max_actions: int = 3) -> dict[s
             except Exception:
                 current = investigate_alert(alert_id)
         else:
-            # The response tool normally returns its post-action investigation.
-            # If that evidence is missing, do not reuse the previous snapshot:
-            # fetch current graph state before deciding whether another action
-            # is needed.
+            # Re-query if the action omits fresh evidence.
             current = investigate_alert(alert_id)
         actions.append({"sequence": index + 1, "decision": choice, **result})
         if result.get("status") != "verified":
@@ -147,8 +144,7 @@ async def run_autonomous_response(alert_id: str, max_actions: int = 3) -> dict[s
         stop_reason = "action_limit_reached"
 
     final = current.model_dump(mode="json") if current else None
-    # A capped run with paths remaining is stopped, not complete. This keeps
-    # run completion separate from verified removal of modeled reachability.
+    # Completion requires verified actions and a fresh no-path result.
     status = "completed" if stop_reason == "no_qualifying_path" and all(item.get("status") == "verified" for item in actions) else "stopped"
     if stop_reason.startswith("gemini_key"):
         warnings.append("Gemini is unavailable; no action was taken.")

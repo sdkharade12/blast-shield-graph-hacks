@@ -18,10 +18,6 @@ def seed_scenario4_graph(graph) -> None:
     allowing the containment tests to start from a clean baseline.
     """
 
-    # ============================================================
-    # STEP 1: CREATE OR UPDATE THE SYNTHETIC NODES
-    # ============================================================
-
     graph.query(
         """
         MERGE (i:Identity {id: 'containment-user-01'})
@@ -60,10 +56,6 @@ def seed_scenario4_graph(graph) -> None:
         """
     )
 
-    # ============================================================
-    # STEP 2: CREATE THE TWO SESSION ACCESS ROUTES
-    # ============================================================
-
     graph.query(
         """
         MATCH
@@ -80,10 +72,6 @@ def seed_scenario4_graph(graph) -> None:
         SET alternate.containment_status = 'ACTIVE'
         """
     )
-
-    # ============================================================
-    # STEP 3: CONNECT SESSIONS TO WORKLOADS AND IAM ROLES
-    # ============================================================
 
     graph.query(
         """
@@ -102,10 +90,6 @@ def seed_scenario4_graph(graph) -> None:
         MERGE (wa)-[:RUNS_AS]->(ra)
         """
     )
-
-    # ============================================================
-    # STEP 4: CONNECT BOTH ROLES TO THE CRITICAL DATABASE
-    # ============================================================
 
     graph.query(
         """
