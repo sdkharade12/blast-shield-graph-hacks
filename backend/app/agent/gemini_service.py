@@ -62,8 +62,12 @@ def _ground_answer(answer: str, alert_id: str, canonical_result=None) -> tuple[s
     # IDs in this demo always use a hyphen or underscore and include a digit.
     mentioned_ids = set(re.findall(r"\b[a-z][a-z0-9]*(?:[-_][a-z0-9]+)+\b", answer.lower()))
     ignored = {
-        "synthetic_falkordb", "falkordb", "real-world",
-        result.alert_id.lower(), result.investigation_id.lower(),
+        "synthetic_falkordb",
+        "falkordb",
+        "real-world",
+        "demo-rules-v1",  # Risk ruleset metadata, not a graph entity
+        result.alert_id.lower(),
+        result.investigation_id.lower(),
         result.provenance.get("dataset_version", "").lower(),
     }
     unsupported = sorted(item for item in mentioned_ids - known_ids - ignored if any(char.isdigit() for char in item))
