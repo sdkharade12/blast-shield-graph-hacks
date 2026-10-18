@@ -23,14 +23,8 @@ def seed_blastshield_graph(graph) -> None:
 
     print("Seeding the BlastShield graph...")
 
-    # ---------------------------------------------------------
-    # STEP 1: Create or update infrastructure entities
-    # ---------------------------------------------------------
-
     graph.query("""
-        // =====================================================
-        // SCENARIO 1: IDENTITY INVESTIGATION
-        // =====================================================
+        // Identity investigation
 
         MERGE (i:Identity {id: 'developer_07'})
         SET i.name = 'Developer 07',
@@ -54,18 +48,14 @@ def seed_blastshield_graph(graph) -> None:
         SET d.name = 'Customer Database',
             d.sensitivity = 'critical'
 
-        // =====================================================
-        // SCENARIO 2: EXCESSIVE IAM PERMISSIONS
-        // =====================================================
+        // Excessive IAM permissions
 
         MERGE (ar:IAMRole {id: 'analytics-role'})
         SET ar.name = 'Analytics Role',
             ar.privilege_level = 'LOW',
             ar.intended_scope = 'ANALYTICS'
 
-        // =====================================================
-        // SCENARIO 3: EXPOSED WORKLOAD
-        // =====================================================
+        // Exposed workload
 
         MERGE (api:Workload {id: 'exposed-api-01'})
         SET api.name = 'Exposed API Service',
@@ -122,10 +112,6 @@ def seed_blastshield_graph(graph) -> None:
         SET orphan.name = 'Unattached Archive', orphan.sensitivity = 'critical'
     """)
 
-    # ---------------------------------------------------------
-    # STEP 2: Create or update infrastructure relationships
-    # ---------------------------------------------------------
-
     graph.query("""
         MATCH (i:Identity {id: 'developer_07'})
         MATCH (s:Session {id: 'sess_007'})
@@ -140,7 +126,7 @@ def seed_blastshield_graph(graph) -> None:
         MATCH (payments:DataAsset {id: 'payments-db'})
         MATCH (config:DataAsset {id: 'config-store'})
 
-        // Scenario 1: Identity-to-data access path.
+        // Identity-to-data access path.
 
         MERGE (i)-[identity_session:HAS_SESSION]->(s)
         SET identity_session.response_status = 'ACTIVE'
@@ -149,7 +135,7 @@ def seed_blastshield_graph(graph) -> None:
         MERGE (r)-[:CAN_ASSUME]->(pr)
         MERGE (pr)-[:CAN_READ]->(d)
 
-        // Scenario 2: Excessive role-assumption permission.
+        // Excessive role-assumption permission.
 
         MERGE (ar)-[permission:CAN_ASSUME]->(pr)
         SET permission.assessment = 'EXCESSIVE',
@@ -161,7 +147,7 @@ def seed_blastshield_graph(graph) -> None:
                 'Analytics role can assume a production role '
                 + 'outside its intended scope'
 
-        // Scenario 3: Exposed workload and its reachable assets.
+        // Exposed workload and its reachable assets.
 
         MERGE (api)-[:RUNS_AS]->(api_role)
         SET api.response_status = 'ACTIVE'
@@ -210,7 +196,6 @@ def main() -> None:
     with graph_connection() as graph:
         seed_blastshield_graph(graph)
 
-        # Count nodes.
         node_result = graph.ro_query("""
             MATCH (n)
             RETURN count(n) AS node_count
@@ -218,7 +203,6 @@ def main() -> None:
 
         node_count = node_result.result_set[0][0]
 
-        # Count relationships.
         edge_result = graph.ro_query("""
             MATCH ()-[r]->()
             RETURN count(r) AS edge_count
